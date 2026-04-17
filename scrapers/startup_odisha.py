@@ -1,0 +1,14 @@
+import httpx
+from bs4 import BeautifulSoup
+from scrapers.base_scraper import insert_into_bronze
+
+url = "https://startupodisha.gov.in"
+
+async def scrape_startup_odisha():
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+            response = await client.get(url)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            insert_into_bronze(url, {"title": soup.title.string if soup.title else "Odisha portal", "content": str(soup.body)[:1000]})
+    except Exception as e:
+        print(f"Failed to scrape Odisha: {e}")

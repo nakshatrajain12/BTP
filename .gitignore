@@ -1,0 +1,13 @@
+# Environments
+.env
+
+# Cache and build directories
+__pycache__/
+.pytest_cache/
+.qodo/
+
+# Project documents and output reports
+Startup_Policy_Intelligence_Implementation_Plan (1).pdf
+Startup_Intelligence_Report.md
+pdf_text_output.txt
+IMPLEMENTATION_STATUS.md
