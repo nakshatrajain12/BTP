@@ -6,7 +6,7 @@ const inter = Inter({ subsets: ["latin"], weight: ["300", "400", "500", "600"], 
 const manrope = Manrope({ subsets: ["latin"], weight: ["600", "700", "800"], variable: "--font-manrope" });
 
 export const metadata: Metadata = {
-  title: "G.Take — Policy Intelligence",
+  title: "GOV-DASH — Policy Intelligence",
   description: "AI-powered startup policy intelligence dashboard — discover government schemes, grants, and funding opportunities tailored for your startup.",
 };
 

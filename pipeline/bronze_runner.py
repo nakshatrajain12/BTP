@@ -11,6 +11,12 @@ from scrapers.dst import scrape_dst
 from scrapers.msme import scrape_msme
 from scrapers.kerala_startup import scrape_kerala_startup
 from scrapers.startup_odisha import scrape_startup_odisha
+from scrapers.birac import scrape_birac
+from scrapers.startup_karnataka import scrape_karnataka
+from scrapers.rajasthan_startup import scrape_rajasthan
+from scrapers.data_gov import scrape_data_gov
+from scrapers.pib import scrape_pib
+from scrapers.startup_india_api import scrape_startup_india_api
 
 async def run_all_scrapers():
     print("Starting all scrapers...")
@@ -22,6 +28,12 @@ async def run_all_scrapers():
     await scrape_msme()
     await scrape_kerala_startup()
     await scrape_startup_odisha()
+    await scrape_birac()
+    await scrape_karnataka()
+    await scrape_rajasthan()
+    await scrape_data_gov()
+    await scrape_pib()
+    await scrape_startup_india_api()
     print("Scraping completed.")
 
 if __name__ == "__main__":

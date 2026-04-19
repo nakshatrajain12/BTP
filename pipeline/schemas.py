@@ -24,3 +24,8 @@ class SchemeRecord(BaseModel):
     success_stories: Optional[str] = None
     sector_distribution: Optional[Dict[str, Any]] = None
     nlp_summary: Optional[str] = None
+    
+    # Decision Intelligence Fields
+    equity_or_grant: Optional[str] = None # "Equity", "Grant", "Loan", "Debt", "Mixed"
+    disbursement_structure: Optional[str] = None 
+    next_deadline: Optional[date] = None # Used for auto-alerting upcoming cycles

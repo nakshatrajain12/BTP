@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scrapers.base_scraper import supabase
@@ -17,6 +18,12 @@ def run_nlp_enrichment():
             print(f"Updated summary for {scheme.get('scheme_name')}")
         except Exception as e:
             print(f"Failed to summarize scheme {scheme.get('scheme_name')}: {e}")
+            if "429" in str(e):
+                print("Hit 429 quota limit. Sleeping 60s...")
+                time.sleep(60)
+
+        # Pace the free tier API quota
+        time.sleep(5)
 
 if __name__ == "__main__":
     run_nlp_enrichment()

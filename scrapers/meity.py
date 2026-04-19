@@ -11,6 +11,6 @@ async def scrape_meity():
             soup = BeautifulSoup(response.text, 'html.parser')
             title = soup.title.string if soup.title else "MeitY portal"
             schemes = [a.text.strip() for a in soup.find_all('a') if 'scheme' in a.text.lower()]
-            insert_into_bronze(url, {"title": title, "schemes": schemes, "content": str(soup.body)[:1000]})
+            insert_into_bronze(url, {"title": title, "schemes": schemes, "content": str(soup.body)[:15000]})
     except Exception as e:
         print(f"Failed to scrape MeitY: {e}")

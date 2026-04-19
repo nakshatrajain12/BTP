@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="100%" height="100%">
+  <!-- Background -->
+  <rect width="1000" height="700" fill="#f8fafc" />
+
+  <!-- Titles -->
+  <text x="500" y="45" font-family="'Segoe UI', Roboto, sans-serif" font-size="28" font-weight="900" fill="#334155" text-anchor="middle">GOV-DASH System Architecture</text>
+  <text x="500" y="70" font-family="'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="600" fill="#64748b" text-anchor="middle">Medallion Data Pipeline &amp; Application Layer</text>
+
+  <!-- Data Sources Section -->
+  <rect x="50" y="110" width="220" height="420" rx="10" fill="#e0f2fe" stroke="#3b82f6" stroke-width="2" />
+  <text x="160" y="140" font-family="'Segoe UI', sans-serif" font-size="18" font-weight="700" fill="#0369a1" text-anchor="middle">Data Sources</text>
+
+  <rect x="70" y="170" width="180" height="60" rx="6" fill="#0ea5e9" opacity="0.9" />
+  <text x="160" y="200" font-family="'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#fff" text-anchor="middle">Central Portals (DPIIT)</text>
+  
+  <rect x="70" y="250" width="180" height="60" rx="6" fill="#0ea5e9" opacity="0.9" />
+  <text x="160" y="280" font-family="'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#fff" text-anchor="middle">State Hubs (Kerala, Odisha)</text>
+
+  <rect x="70" y="330" width="180" height="60" rx="6" fill="#0ea5e9" opacity="0.9" />
+  <text x="160" y="365" font-family="'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#fff" text-anchor="middle">Central XLSX Dumps</text>
+
+  <!-- Data Pipeline (Medallion) -->
+  <rect x="350" y="110" width="300" height="420" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2" />
+  <text x="500" y="140" font-family="'Segoe UI', sans-serif" font-size="18" font-weight="700" fill="#b45309" text-anchor="middle">ETL Data Pipeline (Medallion)</text>
+
+  <rect x="380" y="170" width="240" height="60" rx="6" fill="#d97706" />
+  <text x="500" y="200" font-family="'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#fff" text-anchor="middle">Bronze Layer (Raw Scraping)</text>
+
+  <rect x="380" y="260" width="240" height="60" rx="6" fill="#9ca3af" />
+  <text x="500" y="290" font-family="'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#fff" text-anchor="middle">Silver Layer (Validation/Cleaning)</text>
+
+  <rect x="380" y="350" width="240" height="100" rx="6" fill="#fbbf24" />
+  <text x="500" y="380" font-family="'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#78350f" text-anchor="middle">Gold Layer (Enrichment)</text>
+  <text x="500" y="405" font-family="'Segoe UI', sans-serif" font-size="12" font-weight="400" fill="#78350f" text-anchor="middle">LLM Inference (Eligibility extraction)</text>
+  <text x="500" y="425" font-family="'Segoe UI', sans-serif" font-size="12" font-weight="400" fill="#78350f" text-anchor="middle">Deduplication &amp; NLP Summary</text>
+
+  <!-- Backend API -->
+  <rect x="730" y="110" width="220" height="180" rx="10" fill="#f3e8ff" stroke="#a855f7" stroke-width="2" />
+  <text x="840" y="140" font-family="'Segoe UI', sans-serif" font-size="18" font-weight="700" fill="#7e22ce" text-anchor="middle">Backend Services</text>
+
+  <rect x="750" y="160" width="180" height="50" rx="6" fill="#a855f7" opacity="0.9" />
+  <text x="840" y="190" font-family="'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#fff" text-anchor="middle">FastAPI Endpoints</text>
+
+  <rect x="750" y="220" width="180" height="50" rx="6" fill="#a855f7" opacity="0.9" />
+  <text x="840" y="250" font-family="'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#fff" text-anchor="middle">SQLite Database</text>
+
+  <!-- Client Application -->
+  <rect x="730" y="310" width="220" height="220" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="2" />
+  <text x="840" y="340" font-family="'Segoe UI', sans-serif" font-size="18" font-weight="700" fill="#047857" text-anchor="middle">Client Application</text>
+
+  <rect x="750" y="360" width="180" height="50" rx="6" fill="#10b981" opacity="0.9" />
+  <text x="840" y="390" font-family="'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#fff" text-anchor="middle">Next.js Framework</text>
+  
+  <rect x="750" y="420" width="180" height="50" rx="6" fill="#10b981" opacity="0.9" />
+  <text x="840" y="450" font-family="'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#fff" text-anchor="middle">Heuristic Matching Engine</text>
+
+  <rect x="750" y="480" width="180" height="35" rx="6" fill="#10b981" opacity="0.9" />
+  <text x="840" y="502" font-family="'Segoe UI', sans-serif" font-size="12" font-weight="600" fill="#fff" text-anchor="middle">Supabase Auth SSR</text>
+
+  <!-- Arrows / Flow Lines -->
+  <!-- Sources to Bronze -->
+  <line x1="270" y1="200" x2="350" y2="200" stroke="#94a3b8" stroke-width="3" stroke-dasharray="6,4" marker-end="url(#arrow)" />
+  <line x1="270" y1="280" x2="320" y2="280" stroke="#94a3b8" stroke-width="3" stroke-dasharray="6,4" />
+  <line x1="320" y1="280" x2="320" y2="200" stroke="#94a3b8" stroke-width="3" stroke-dasharray="6,4" />
+
+  <line x1="270" y1="360" x2="335" y2="360" stroke="#94a3b8" stroke-width="3" stroke-dasharray="6,4" />
+  <line x1="335" y1="360" x2="335" y2="200" stroke="#94a3b8" stroke-width="3" stroke-dasharray="6,4" />
+  
+  <!-- Bronze bounds -->
+  <line x1="350" y1="200" x2="380" y2="200" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)" />
+  
+  <!-- Medallion vertical flow -->
+  <line x1="500" y1="230" x2="500" y2="260" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)" />
+  <line x1="500" y1="320" x2="500" y2="350" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)" />
+
+  <!-- Gold to Backend -->
+  <line x1="650" y1="400" x2="690" y2="400" stroke="#94a3b8" stroke-width="3" />
+  <line x1="690" y1="400" x2="690" y2="245" stroke="#94a3b8" stroke-width="3" />
+  <line x1="690" y1="245" x2="730" y2="245" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)" />
+
+  <!-- Backend to Frontend -->
+  <line x1="840" y1="290" x2="840" y2="310" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)" />
+
+  <!-- Supabase floating auth context -->
+  <rect x="690" y="580" width="300" height="70" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="4" />
+  <text x="840" y="610" font-family="'Segoe UI', sans-serif" font-size="14" font-weight="700" fill="#475569" text-anchor="middle">End User Constraints</text>
+  <text x="840" y="630" font-family="'Segoe UI', sans-serif" font-size="12" font-weight="400" fill="#475569" text-anchor="middle">(Stage, Sector, Location passed over API)</text>
+
+  <!-- Up arrow from User constraint -->
+  <line x1="840" y1="580" x2="840" y2="530" stroke="#cbd5e1" stroke-width="3" marker-end="url(#arrow)" />
+
+  <!-- Arrow Definitions -->
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="5" refY="4" orient="auto-start-reverse">
+      <polygon points="0,0 8,4 0,8" fill="#94a3b8" />
+    </marker>
+  </defs>
+
+</svg>

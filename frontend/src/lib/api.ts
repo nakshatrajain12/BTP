@@ -59,6 +59,14 @@ class PolicyAPI {
     });
   }
 
+  // Evaluate single scheme against user profile
+  evaluateScheme(profile: { sector: string, stage: string, state: string, startup_name: string, scheme_id: string }) {
+    return this.request<any>("/evaluate-scheme", {
+      method: "POST",
+      body: JSON.stringify(profile)
+    });
+  }
+
   // Pipeline Status
   getPipelineStatus() {
     return this.request<any>("/pipeline/status");

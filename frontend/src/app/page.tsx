@@ -1,25 +1,67 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useRouter } from "next/navigation";
 import { Toaster, toast } from "sonner";
-import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, PieChart, Pie, Cell, Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, PieChart, Pie, Cell, Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, LabelList } from 'recharts';
 
-// ─── Data Hooks ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════
+// TRUE SESSION-WIDE IN-MEMORY CACHE
+// Survives React re-renders and component unmounts.
+// Only clears on full page reload or manual invalidation.
+// ═══════════════════════════════════════════════════
+const SESSION_CACHE = new Map<string, any>();
+const INFLIGHT = new Map<string, Promise<any>>();
+
+function buildCacheKey(url: string, opts?: RequestInit): string {
+  if (opts?.method === "POST" && opts.body) {
+    return `POST:${url}:${opts.body}`;
+  }
+  return `GET:${url}`;
+}
+
+function invalidateCache(keyPattern?: string) {
+  if (!keyPattern) { SESSION_CACHE.clear(); return; }
+  for (const k of SESSION_CACHE.keys()) {
+    if (k.includes(keyPattern)) SESSION_CACHE.delete(k);
+  }
+}
+
 function useAPI<T>(url: string, opts?: RequestInit) {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = buildCacheKey(url, opts);
+  const cached = SESSION_CACHE.get(cacheKey);
+
+  const [data, setData] = useState<T | null>(cached ?? null);
+  const [loading, setLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-    fetch(`${API}${url}`, opts)
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false); })
-      .catch(e => { setError(e.message); setLoading(false); });
+    // Instant return if already cached
+    if (SESSION_CACHE.has(cacheKey)) {
+      setData(SESSION_CACHE.get(cacheKey));
+      setLoading(false);
+      return;
+    }
+
+    // Deduplicate: if this exact request is already in-flight, wait for it
+    let promise = INFLIGHT.get(cacheKey);
+    if (!promise) {
+      const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      promise = fetch(`${API}${url}`, opts).then(r => r.json());
+      INFLIGHT.set(cacheKey, promise);
+    }
+
+    promise
+      .then(d => {
+        SESSION_CACHE.set(cacheKey, d);
+        setData(d);
+        setLoading(false);
+      })
+      .catch(e => { setError(e.message); setLoading(false); })
+      .finally(() => INFLIGHT.delete(cacheKey));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url]);
+  }, [cacheKey]);
 
   return { data, loading, error };
 }
@@ -46,7 +88,7 @@ interface Summary {
   total_schemes: number;
   total_budget: number;
   unique_ministries: number;
-  avg_funding: number;
+  avg_max_funding: number;
 }
 
 interface Alert {
@@ -71,7 +113,9 @@ type View = "dashboard" | "schemes" | "analytics" | "alerts" | "stories";
 export default function App() {
   const [view, setView] = useState<View>("dashboard");
   const [mounted, setMounted] = useState(false);
-  const [userProfile, setUserProfile] = useState<{ startupName: string; sector: string } | null>(null);
+  const [userProfile, setUserProfile] = useState<{ startupName: string; sector: string; stage?: string; location?: string } | null>(null);
+  const [selectedSchemeId, setSelectedSchemeId] = useState<string | null>(null);
+  const [selectedRec, setSelectedRec] = useState<any | null>(null);  // Full AI recommendation data for eligibility modal
   const router = useRouter();
 
   const supabase = createBrowserClient(
@@ -82,12 +126,28 @@ export default function App() {
   useEffect(() => { 
     setMounted(true); 
     const getUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user?.user_metadata) {
+      // Check for bypassed dummy auth first
+      const dummyUserStr = localStorage.getItem('dummy_user');
+      if (dummyUserStr) {
+        const dummyUser = JSON.parse(dummyUserStr);
         setUserProfile({
-          startupName: user.user_metadata.startup_name || "Founder",
-          sector: user.user_metadata.sector || "All Sectors"
+          startupName: dummyUser.startup_name || "Founder",
+          sector: dummyUser.sector || "All Sectors",
+          stage: dummyUser.stage || "Idea",
+          location: dummyUser.location || "Pan-India"
         });
+      } else {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user?.user_metadata) {
+          setUserProfile({
+            startupName: user.user_metadata.startup_name || "Founder",
+            sector: user.user_metadata.sector || "All Sectors",
+            stage: user.user_metadata.stage || "Idea",
+            location: user.user_metadata.location || "Pan-India"
+          });
+        } else {
+          router.push('/login');
+        }
       }
     };
     getUser();
@@ -100,6 +160,7 @@ export default function App() {
   }
 
   const handleLogout = async () => {
+    localStorage.removeItem('dummy_user');
     await supabase.auth.signOut();
     toast.success("Signed out successfully");
     setTimeout(() => { router.push("/login"); router.refresh(); }, 800);
@@ -123,7 +184,7 @@ export default function App() {
           {/* Logo */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 16px 24px" }}>
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="3"><path d="M4 4l16 16M4 20L20 4" strokeLinecap="round"/></svg>
-            <span style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 20, color: "#fff", letterSpacing: "-0.05em" }}>G.Take</span>
+            <span style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 20, color: "#fff", letterSpacing: "-0.05em" }}>GOV-DASH</span>
           </div>
           
           {/* Nav */}
@@ -195,12 +256,18 @@ export default function App() {
         </header>
 
         {/* Views */}
-        {view === "dashboard"  && <DashboardView onNavigate={setView} mounted={mounted} profile={userProfile} />}
-        {view === "schemes"    && <SchemesView />}
+        {view === "dashboard"  && <DashboardView onNavigate={setView} onSelectScheme={setSelectedSchemeId} onSelectRec={setSelectedRec} mounted={mounted} profile={userProfile} />}
+        {view === "schemes"    && <SchemesView defaultSelectedId={selectedSchemeId} onSelectScheme={setSelectedSchemeId} />}
         {view === "analytics"  && <AnalyticsView mounted={mounted} />}
         {view === "stories"    && <SuccessStoriesView />}
         {view === "alerts"     && <AlertsView mounted={mounted} />}
       </main>
+
+      {/* Eligibility Intelligence Modal — from AI Matches */}
+      {selectedRec && <EligibilityDetailModal rec={selectedRec} onClose={() => setSelectedRec(null)} />}
+
+      {/* Scheme Detail Modal — from Radar / Explorer */}
+      {!selectedRec && selectedSchemeId && <SchemeDetailLoader schemeId={selectedSchemeId} onClose={() => setSelectedSchemeId(null)} />}
 
       {/* Local Agent / Chatbot UI */}
       {mounted && <LocalAgentChatbot profile={userProfile} />}
@@ -211,146 +278,260 @@ export default function App() {
 // ══════════════════════════════════════════
 // DASHBOARD VIEW
 // ══════════════════════════════════════════
-function DashboardView({ onNavigate, mounted, profile }: { onNavigate: (v: View) => void, mounted: boolean, profile: any }) {
+function DashboardView({ onNavigate, onSelectScheme, onSelectRec, mounted, profile }: { onNavigate: (v: View) => void, onSelectScheme: (id: string) => void, onSelectRec: (rec: any) => void, mounted: boolean, profile: any }) {
   const { data: summary, loading: sLoading } = useAPI<Summary>("/analytics/summary");
-  const { data: alertsData, loading: aLoading } = useAPI<{ alerts: Alert[] }>("/alerts/recent");
-  const { data: fundingData } = useAPI<{ ministry: string; total_budget: number }[]>("/analytics/funding-by-ministry");
-  const { data: recData, loading: rLoading } = useAPI<{ recommendations: any[] }>("/recommend", {
+  const { data: radarData, loading: rLoading } = useAPI<any>("/opportunity-radar");
+  
+  const dummyUserStr = typeof window !== 'undefined' ? localStorage.getItem('dummy_user') : null;
+  let email = profile?.startupName || "Founder";
+  if (dummyUserStr) email = JSON.parse(dummyUserStr).startup_name;
+  
+  const { data: appsData, loading: appLoading } = useAPI<any>(`/applications?user_email=${encodeURIComponent(email)}`);
+  
+  const { data: recData, loading: recsLoading } = useAPI<{ recommendations: any[] }>("/recommend", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ 
       sector: profile?.sector || "Deeptech", 
-      stage: "Idea", 
-      state: "Pan-India" 
+      stage: profile?.stage || "Idea", 
+      state: profile?.location || "Pan-India",
+      startup_name: profile?.startupName || "Founder"
     })
   });
 
-  const alerts = alertsData?.alerts || [];
   const recs = recData?.recommendations || [];
-  const topAlert = alerts[0] || null;
+  const openNow = radarData?.open_now || [];
+  const newlyAdded = radarData?.newly_added || [];
+  const closingSoon = radarData?.closing_soon || [];
+  const applications = appsData?.applications || [];
 
   return (
-    <div style={{ display: "flex", gap: 24 }}>
-      {/* Main column */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {/* Headline */}
-        <div style={{ marginBottom: 32 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+      {/* Floating gradient orbs for visual depth */}
+      <div style={{ position: 'fixed', top: '15%', right: '10%', width: 350, height: 350, borderRadius: '50%', background: 'radial-gradient(circle, rgba(59,130,246,0.04) 0%, transparent 70%)', animation: 'floatOrb 12s ease-in-out infinite', pointerEvents: 'none', zIndex: 0 }} />
+      <div style={{ position: 'fixed', bottom: '20%', left: '30%', width: 300, height: 300, borderRadius: '50%', background: 'radial-gradient(circle, rgba(168,85,247,0.03) 0%, transparent 70%)', animation: 'floatOrb 15s ease-in-out infinite reverse', pointerEvents: 'none', zIndex: 0 }} />
+      
+      {/* Top Section - Welcome & Overview Stats */}
+      <div className="anim-stagger-1" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 24 }}>
+        <div>
           <h1 style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 38, color: "#fff", letterSpacing: "-0.03em", textTransform: "uppercase", margin: "0 0 8px" }}>
             Welcome, {profile?.startupName || "Founder"}!
           </h1>
-          <p style={{ color: "#64748b", fontSize: 14, margin: 0 }}>AI-powered policies matching your <strong style={{ color: "#a855f7" }}>{profile?.sector || "curated"}</strong> profile</p>
+          <p style={{ color: "#94a3b8", fontSize: 15, margin: 0 }}>Here is your personalized policy intelligence for today.</p>
         </div>
-
-        {/* Stat cards */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16, marginBottom: 32 }}>
-          <StatCard title="Total Schemes" value={sLoading ? "..." : String(summary?.total_schemes ?? 0)} sub="Active in database" icon="policy" color="#3b82f6" />
-          <StatCard title="Total Budget Pool" value={sLoading ? "..." : fmtCurrency(summary?.total_budget ?? 0)} sub="Across all schemes" icon="payments" color="#22c55e" />
-          <StatCard title="Ministries" value={sLoading ? "..." : String(summary?.unique_ministries ?? 0)} sub="Funding bodies" icon="account_balance" color="#a855f7" />
-        </div>
-
-        {/* Filter chips */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" }}>
-          {["All Schemes", "Deeptech", "Agriculture", "Healthcare", "Fintech", "Idea Stage", "MVP Stage", "Scaling"].map((chip) => (
-            <button key={chip} onClick={() => { onNavigate("schemes"); toast.success(`Filtering by: ${chip}`); }}
-              style={{ padding: "6px 14px", borderRadius: 999, background: chip === "All Schemes" ? "rgba(59,130,246,0.2)" : "rgba(30,41,59,0.5)", border: chip === "All Schemes" ? "1px solid rgba(59,130,246,0.3)" : "1px solid rgba(255,255,255,0.05)", color: chip === "All Schemes" ? "#60a5fa" : "#94a3b8", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-              {chip}
-            </button>
-          ))}
-        </div>
-
-        {/* Scheme recommendations */}
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <h2 style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 800, fontSize: 18, color: "#fff", margin: 0 }}>AI Recommended Schemes</h2>
-            <button onClick={() => onNavigate("schemes")} style={{ background: "rgba(59,130,246,0.1)", border: "1px solid rgba(59,130,246,0.2)", color: "#60a5fa", padding: "6px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-              View All →
-            </button>
+        
+        {/* Top High-level Stats */}
+        <div style={{ display: "flex", gap: 16 }}>
+          <div style={{ padding: "16px 24px", background: "linear-gradient(135deg, rgba(30,41,59,0.5) 0%, rgba(15,23,42,0.5) 100%)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.05)", display: "flex", alignItems: "center", gap: 16 }}>
+            <div style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(59,130,246,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className="material-symbols-outlined" style={{ color: "#60a5fa", fontSize: 24 }}>public</span>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>Total Active Schemes</div>
+              <div style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 20, color: "#fff" }}>{sLoading ? "..." : summary?.total_schemes}</div>
+            </div>
           </div>
-
-          {rLoading ? (
-            <div style={{ padding: 32, textAlign: "center", color: "#475569" }}>Loading AI recommendations...</div>
-          ) : recs.length > 0 ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {recs.map((rec: any, i: number) => (
-                <SchemeCard key={i} scheme={rec} featured={i === 0} />
-              ))}
+          <div style={{ padding: "16px 24px", background: "linear-gradient(135deg, rgba(30,41,59,0.5) 0%, rgba(15,23,42,0.5) 100%)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.05)", display: "flex", alignItems: "center", gap: 16 }}>
+            <div style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(34,197,94,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className="material-symbols-outlined" style={{ color: "#4ade80", fontSize: 24 }}>account_balance</span>
             </div>
-          ) : (
-            <div style={{ padding: 32, textAlign: "center", color: "#475569", background: "rgba(30,41,59,0.3)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.05)" }}>
-              No AI recommendations available. Make sure the backend is running and try running the pipeline.
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>Avg. Max Funding Cap</div>
+              <div style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 20, color: "#fff" }}>{sLoading ? "..." : fmtCurrency(summary?.avg_max_funding ?? 0)}</div>
             </div>
-          )}
+          </div>
         </div>
       </div>
 
-      {/* Right sidebar */}
-      <div style={{ width: 300, flexShrink: 0, display: "flex", flexDirection: "column", gap: 16 }}>
-        {/* Latest alert */}
-        <div style={{ background: "linear-gradient(135deg, rgba(59,130,246,0.4) 0%, rgba(15,23,42,0.8) 100%)", borderRadius: 20, padding: 20, border: "1px solid rgba(255,255,255,0.08)", position: "relative", overflow: "hidden" }}>
-          <div style={{ position: "absolute", top: -20, right: -20, width: 80, height: 80, background: "rgba(96,165,250,0.2)", borderRadius: "50%", filter: "blur(20px)" }} />
-          <div style={{ position: "relative", zIndex: 1 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <h3 style={{ fontWeight: 700, fontSize: 16, color: "#fff", margin: 0 }}>Latest Alert</h3>
-              <button onClick={() => onNavigate("alerts")} style={{ background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: "50%", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-                <span className="material-symbols-outlined" style={{ fontSize: 16, color: "#fff" }}>notifications_active</span>
-              </button>
+      <div className="anim-stagger-2" style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 28, alignItems: "start" }}>
+        
+        {/* Left Column - Main Content */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+          
+          {/* Panel 1: Premium AI Matches (Clean, Spacious) */}
+          <div style={{ background: "rgba(30,41,59,0.3)", backdropFilter: "blur(12px)", borderRadius: 20, padding: 28, border: "1px solid rgba(168,85,247,0.15)", boxShadow: "0 10px 40px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.05)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+              <div>
+                <h2 style={{ fontSize: 22, fontWeight: 800, margin: "0 0 4px", color: "#fff", display: "flex", alignItems: "center", gap: 8 }}>
+                   <span className="material-symbols-outlined" style={{ color: "#a855f7" }}>magic_button</span> Highly Recommended For You
+                </h2>
+                <p style={{ margin: 0, fontSize: 13, color: "#94a3b8" }}>Based on your {profile?.stage || "Idea"} stage startup in {profile?.sector || "All Sectors"}.</p>
+              </div>
+              <button onClick={() => onNavigate("schemes")} style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#e2e8f0", padding: "8px 16px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, transition: "background 0.2s" }} onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"} onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.05)"}>View All Schemes</button>
             </div>
-            {aLoading ? (
-              <p style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.6 }}>Loading alerts...</p>
-            ) : topAlert ? (
-              <>
-                <p style={{ color: "#e2e8f0", fontSize: 13, lineHeight: 1.6, margin: "0 0 12px" }}>
-                  <strong>{topAlert.scheme_name}</strong> updated: {topAlert.changed_fields?.join(", ")} changed.
-                </p>
-                <div style={{ fontSize: 11, color: "#93c5fd", fontWeight: 600 }}>
-                  {mounted && new Date(topAlert.changed_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
-                </div>
-              </>
+            
+            {recsLoading ? (
+              <div style={{ padding: "40px 0", textAlign: "center" }}>
+                <span className="material-symbols-outlined spinner" style={{ fontSize: 36, color: "#a855f7", marginBottom: 12 }}>sync</span>
+                <p style={{color:"#94a3b8", fontSize: 14, margin: 0}}>Our AI is scanning frameworks to find your perfect matches...</p>
+              </div>
+            ) : recs.length === 0 ? (
+              <p style={{color:"#475569", fontSize: 13}}>No highly matched schemes found right now.</p>
             ) : (
-              <p style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.6, margin: 0 }}>✅ No recent policy changes. You are up to date!</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                 {recs.slice(0,3).map((r: any, i: number) => {
+                    const score = r.eligibility_score || r.match_score || 0;
+                   const scoreColor = score >= 80 ? "#4ade80" : score >= 50 ? "#fbbf24" : "#f87171";
+                   return (
+                   <div 
+                     key={i} 
+                     onClick={() => onSelectRec({ ...r, eligibility_score: score })}
+                     style={{ display: "flex", alignItems: "center", padding: "20px", background: "linear-gradient(90deg, rgba(15,23,42,0.8) 0%, rgba(30,41,59,0.3) 100%)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.03)", cursor: "pointer", transition: "all 0.2s" }}
+                     onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.borderColor = "rgba(168,85,247,0.3)"; e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.3)"; }}
+                     onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.03)"; e.currentTarget.style.boxShadow = "none"; }}
+                   >
+                     {/* Circular Score Badge */}
+                     <div style={{ width: 56, height: 56, borderRadius: "50%", background: `rgba(${score >= 80 ? '74,222,128' : score >= 50 ? '251,191,36' : '248,113,113'}, 0.1)`, border: `2px solid ${scoreColor}40`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginRight: 20 }}>
+                        <span style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 18, color: scoreColor }}>{score}%</span>
+                     </div>
+                     
+                     <div style={{ flex: 1, paddingRight: 24 }}>
+                      <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", marginBottom: 6 }}>{r.name}</div>
+                      <div style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.5 }}>{r.reason}</div>
+                     </div>
+                     
+                     <div style={{ display: "flex", gap: 12, alignItems: "center", flexShrink: 0 }}>
+                       <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", marginRight: 16 }}>
+                         <span style={{ fontSize: 11, background: "rgba(255,255,255,0.05)", color: "#cbd5e1", padding: "4px 10px", borderRadius: 6, fontWeight: 600 }}>{r.equity_type || "Grant"}</span>
+                         <span style={{ fontSize: 11, background: "rgba(255,255,255,0.05)", color: "#cbd5e1", padding: "4px 10px", borderRadius: 6, fontWeight: 600 }}>{r.disbursement_structure || "Milestone-based"}</span>
+                       </div>
+                       <div style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(168,85,247,0.1)", color: "#c084fc", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                         <span className="material-symbols-outlined">arrow_forward</span>
+                       </div>
+                     </div>
+                   </div>
+                 )})}
+              </div>
             )}
           </div>
+          
+          {/* Panel 2: Opportunity Radar */}
+          <div style={{ background: "rgba(30,41,59,0.4)", backdropFilter: "blur(12px)", borderRadius: 20, padding: 24, border: "1px solid rgba(255,255,255,0.05)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="material-symbols-outlined" style={{ color: "#3b82f6" }}>radar</span> Opportunity Radar
+              </h2>
+              <span style={{ fontSize: 11, color: "#4ade80", background: "rgba(74,222,128,0.1)", padding: "4px 10px", borderRadius: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>● Live Scan</span>
+            </div>
+            
+            {rLoading ? <p style={{color:"#475569", fontSize: 13}}>Scanning live opportunities...</p> : (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                {[...openNow, ...closingSoon, ...newlyAdded].slice(0, 4).map((s: any) => (
+                  <div key={s.id} onClick={() => onSelectScheme(s.id)} style={{ display: "flex", flexDirection: "column", padding: "16px", background: "rgba(15,23,42,0.5)", borderRadius: 14, borderTop: s.ui_status === 'new_round' ? "3px solid #fbbf24" : s.ui_status === 'closing_soon' ? "3px solid #f87171" : "3px solid #3b82f6", cursor: "pointer", transition: "background 0.2s" }} onMouseEnter={e => e.currentTarget.style.background="rgba(15,23,42,0.8)"} onMouseLeave={e => e.currentTarget.style.background="rgba(15,23,42,0.5)"}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                      {s.ui_status === 'new_round' && <span style={{ fontSize: 10, background: "rgba(251,191,36,0.1)", color: "#fbbf24", padding: "2px 8px", borderRadius: 4, fontWeight: 800 }}>NEW ROUND</span>}
+                      {s.ui_status === 'closing_soon' && <span style={{ fontSize: 10, background: "rgba(248,113,113,0.1)", color: "#f87171", padding: "2px 8px", borderRadius: 4, fontWeight: 800 }}>CLOSING SOON</span>}
+                      {s.ui_status === 'open' && <span style={{ fontSize: 10, background: "rgba(59,130,246,0.1)", color: "#60a5fa", padding: "2px 8px", borderRadius: 4, fontWeight: 800 }}>OPEN</span>}
+                      
+                      <span style={{ fontSize: 12, fontWeight: 700, color: s.ui_status === 'closing_soon' ? "#f87171" : "#94a3b8" }}>{s.deadline_countdown_days} days left</span>
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 6, lineHeight: 1.3 }}>{s.scheme_name}</div>
+                    <div style={{ fontSize: 12, color: "#64748b", marginTop: "auto" }}>{s.ministry?.split(",")[0] || "Govt. of India"}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          
         </div>
 
-        {/* Summary stats */}
-        <div style={{ background: "rgba(30,41,59,0.4)", backdropFilter: "blur(12px)", borderRadius: 20, padding: 20, border: "1px solid rgba(255,255,255,0.05)" }}>
-          <h3 style={{ fontWeight: 700, fontSize: 16, color: "#fff", margin: "0 0 16px" }}>Platform Summary</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 24, color: "#fff" }}>{sLoading ? "..." : summary?.total_schemes}</div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", marginTop: 4 }}>Schemes</div>
+        {/* Right Column - Market Intel (expanded) + Compact App Tracker */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 20, height: "100%" }}>
+          
+          {/* Panel 3: Expanded Market Intel — data-driven insights */}
+          <div style={{ background: "linear-gradient(135deg, rgba(59,130,246,0.08) 0%, rgba(30,41,59,0.4) 100%)", backdropFilter: "blur(12px)", borderRadius: 20, padding: 24, border: "1px solid rgba(59,130,246,0.12)" }}>
+            <h2 style={{ fontSize: 18, fontWeight: 800, margin: "0 0 20px", color: "#fff", display: "flex", alignItems: "center", gap: 8 }}>
+               <span className="material-symbols-outlined" style={{ color: "#60a5fa" }}>lightbulb</span> Market Intelligence
+            </h2>
+
+            {/* Quick Stat Cards */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+              <div style={{ background: "rgba(15,23,42,0.5)", borderRadius: 14, padding: "14px 16px", border: "1px solid rgba(255,255,255,0.03)" }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Total Schemes</div>
+                <div style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 22, color: "#60a5fa" }}>{sLoading ? "..." : summary?.total_schemes || 0}</div>
+                <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>Tracked programs</div>
+              </div>
+              <div style={{ background: "rgba(15,23,42,0.5)", borderRadius: 14, padding: "14px 16px", border: "1px solid rgba(255,255,255,0.03)" }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Your Matches</div>
+                <div style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 22, color: "#a855f7" }}>{recsLoading ? "..." : recs.length}</div>
+                <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>AI-matched to profile</div>
+              </div>
+              <div style={{ background: "rgba(15,23,42,0.5)", borderRadius: 14, padding: "14px 16px", border: "1px solid rgba(255,255,255,0.03)" }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Budget Pool</div>
+                <div style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 22, color: "#4ade80" }}>{sLoading ? "..." : fmtCurrency(summary?.total_budget ?? 0)}</div>
+                <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>Total allocated</div>
+              </div>
+              <div style={{ background: "rgba(15,23,42,0.5)", borderRadius: 14, padding: "14px 16px", border: "1px solid rgba(255,255,255,0.03)" }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Ministries</div>
+                <div style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 22, color: "#fbbf24" }}>{sLoading ? "..." : summary?.unique_ministries || 0}</div>
+                <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>Active departments</div>
+              </div>
             </div>
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 24, color: "#fff" }}>{sLoading ? "..." : fmtCurrency(summary?.avg_funding ?? 0)}</div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", marginTop: 4 }}>Avg Funding</div>
+
+            {/* Profile Context Insight */}
+            <div style={{ background: "rgba(168,85,247,0.06)", borderRadius: 14, padding: "16px", border: "1px solid rgba(168,85,247,0.12)", marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 16, color: "#a855f7" }}>psychology</span>
+                <span style={{ fontSize: 11, fontWeight: 800, color: "#a855f7", textTransform: "uppercase", letterSpacing: "0.08em" }}>Profile Insight</span>
+              </div>
+              <p style={{ fontSize: 13, color: "#e2e8f0", lineHeight: 1.6, margin: 0 }}>
+                Your <strong style={{ color: "#fff" }}>{profile?.sector || "sector"}</strong> focus at <strong style={{ color: "#fff" }}>{profile?.stage || "idea"}</strong> stage in <strong style={{ color: "#fff" }}>{profile?.location || "Pan-India"}</strong> has <strong style={{ color: "#a855f7" }}>{recsLoading ? "..." : recs.filter((r: any) => (r.eligibility_score || 0) >= 70).length}</strong> strong matches (70%+ score).
+              </p>
+            </div>
+
+            {/* Opportunity Pipeline */}
+            <div style={{ background: "rgba(15,23,42,0.4)", borderRadius: 14, padding: "16px", border: "1px solid rgba(255,255,255,0.03)" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Opportunity Pipeline</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "#94a3b8", display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#3b82f6" }} />
+                    Open Now
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: "#60a5fa" }}>{rLoading ? "..." : openNow.length}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "#94a3b8", display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#f87171" }} />
+                    Closing Soon
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: "#f87171" }}>{rLoading ? "..." : closingSoon.length}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "#94a3b8", display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#fbbf24" }} />
+                    New Rounds
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: "#fbbf24" }}>{rLoading ? "..." : newlyAdded.length}</span>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Funding by ministry chart */}
-        <div style={{ background: "rgba(30,41,59,0.4)", backdropFilter: "blur(12px)", borderRadius: 20, padding: 20, border: "1px solid rgba(255,255,255,0.05)" }}>
-          <h3 style={{ fontWeight: 700, fontSize: 16, color: "#fff", margin: "0 0 16px", textTransform: "uppercase", letterSpacing: "-0.02em" }}>Funding by Ministry</h3>
-          {fundingData && fundingData.length > 0 ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {fundingData.slice(0, 6).map((item, i) => {
-                const max = Math.max(...fundingData.map((f: any) => f.total_budget || 0));
-                const pct = max > 0 ? ((item.total_budget || 0) / max) * 100 : 0;
-                return (
-                  <div key={i}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 4 }}>
-                      <span style={{ fontWeight: 600, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.ministry?.split(",")[0] || "Unknown"}</span>
-                      <span style={{ fontWeight: 700, color: "#60a5fa" }}>{fmtCurrency(item.total_budget)}</span>
-                    </div>
-                    <div style={{ height: 4, borderRadius: 4, background: "rgba(30,41,59,0.8)" }}>
-                      <div style={{ height: "100%", width: `${pct}%`, borderRadius: 4, background: "linear-gradient(90deg, #3b82f6, #60a5fa)" }} />
-                    </div>
-                  </div>
-                );
-              })}
+          {/* Panel 4: Compact Application Tracker */}
+          <div style={{ background: "rgba(30,41,59,0.4)", backdropFilter: "blur(12px)", borderRadius: 20, padding: 20, border: "1px solid rgba(255,255,255,0.05)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <h2 style={{ fontSize: 15, fontWeight: 800, margin: 0, display: "flex", alignItems: "center", gap: 8, color: "#e2e8f0" }}>
+                 <span className="material-symbols-outlined" style={{ color: "#10b981", fontSize: 18 }}>checklist_rtl</span> App Tracker
+              </h2>
+              {applications.length > 0 && <span style={{ fontSize: 11, fontWeight: 700, color: "#475569" }}>{applications.length} tracked</span>}
             </div>
-          ) : (
-            <div style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: 16 }}>Loading funding data...</div>
-          )}
+            {appLoading ? <p style={{color:"#475569", fontSize: 12}}>Loading...</p> : applications.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "16px 0", color: "#475569" }}>
+                 <div style={{ fontSize: 12, lineHeight: 1.5 }}>No active applications. Start from Schemes Explorer.</div>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {applications.slice(0, 3).map((app: any) => (
+                   <div key={app.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "rgba(15,23,42,0.4)", borderRadius: 10, border: "1px solid rgba(255,255,255,0.02)" }}>
+                     <div style={{ fontSize: 12, fontWeight: 700, color: "#e2e8f0", flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginRight: 12 }}>{app.scheme?.scheme_name || "Unknown"}</div>
+                     <span style={{ fontSize: 11, color: "#fbbf24", fontWeight: 700, textTransform: "capitalize", flexShrink: 0 }}>{app.status}</span>
+                   </div>
+                ))}
+              </div>
+            )}
+          </div>
+          
         </div>
       </div>
     </div>
@@ -360,7 +541,7 @@ function DashboardView({ onNavigate, mounted, profile }: { onNavigate: (v: View)
 // ══════════════════════════════════════════
 // SCHEMES EXPLORER VIEW
 // ══════════════════════════════════════════
-function SchemesView() {
+function SchemesView({ defaultSelectedId, onSelectScheme }: { defaultSelectedId?: string | null, onSelectScheme?: (id: string) => void }) {
   const [search, setSearch] = useState("");
   const [sector, setSector] = useState("");
   const [stage, setStage] = useState("");
@@ -376,6 +557,13 @@ function SchemesView() {
 
   const { data, loading } = useAPI<{ schemes: Scheme[] }>(`/schemes?${params.toString()}`);
   const [selected, setSelected] = useState<Scheme | null>(null);
+
+  useEffect(() => {
+    if (defaultSelectedId && data?.schemes) {
+      const found = data.schemes.find(s => s.id === defaultSelectedId);
+      if (found) setSelected(found);
+    }
+  }, [defaultSelectedId, data]);
 
   const schemes = (data?.schemes || []).filter(s =>
     !search || s.scheme_name.toLowerCase().includes(search.toLowerCase()) || s.ministry?.toLowerCase().includes(search.toLowerCase())
@@ -397,19 +585,19 @@ function SchemesView() {
           style={{ flex: 1, minWidth: 200, padding: "10px 16px", borderRadius: 12, background: "rgba(30,41,59,0.5)", border: "1px solid rgba(255,255,255,0.07)", color: "#fff", fontSize: 14, outline: "none" }}
         />
         <select value={sector} onChange={e => { setSector(e.target.value); setPage(1); }}
-          style={{ padding: "10px 16px", borderRadius: 12, background: "rgba(30,41,59,0.5)", border: "1px solid rgba(255,255,255,0.07)", color: "#94a3b8", fontSize: 13, cursor: "pointer" }}>
-          <option value="">All Sectors</option>
-          {["Technology", "Agriculture", "Healthcare", "Fintech", "Deeptech", "All Sectors", "Sector Agnostic"].map(s => <option key={s} value={s}>{s}</option>)}
+          style={{ padding: "10px 16px", borderRadius: 12, background: "rgba(30,41,59,0.5)", border: "1px solid rgba(255,255,255,0.07)", color: "#e2e8f0", fontSize: 13, cursor: "pointer", appearance: "none" }}>
+          <option value="" style={{ background: "#1e293b", color: "#f8fafc" }}>All Sectors</option>
+          {["Technology", "Agriculture", "Healthcare", "Fintech", "Deeptech", "All Sectors", "Sector Agnostic"].map(s => <option key={s} value={s} style={{ background: "#1e293b", color: "#f8fafc" }}>{s}</option>)}
         </select>
         <select value={stage} onChange={e => { setStage(e.target.value); setPage(1); }}
-          style={{ padding: "10px 16px", borderRadius: 12, background: "rgba(30,41,59,0.5)", border: "1px solid rgba(255,255,255,0.07)", color: "#94a3b8", fontSize: 13, cursor: "pointer" }}>
-          <option value="">All Stages</option>
-          {["Idea", "Prototype", "Early Revenue", "Scale-up"].map(s => <option key={s} value={s}>{s}</option>)}
+          style={{ padding: "10px 16px", borderRadius: 12, background: "rgba(30,41,59,0.5)", border: "1px solid rgba(255,255,255,0.07)", color: "#e2e8f0", fontSize: 13, cursor: "pointer", appearance: "none" }}>
+          <option value="" style={{ background: "#1e293b", color: "#f8fafc" }}>All Stages</option>
+          {["Idea", "Prototype", "Early Revenue", "Scale-up"].map(s => <option key={s} value={s} style={{ background: "#1e293b", color: "#f8fafc" }}>{s}</option>)}
         </select>
         <select value={category} onChange={e => { setCategory(e.target.value); setPage(1); }}
-          style={{ padding: "10px 16px", borderRadius: 12, background: "rgba(30,41,59,0.5)", border: "1px solid rgba(255,255,255,0.07)", color: "#94a3b8", fontSize: 13, cursor: "pointer" }}>
-          <option value="">All Categories</option>
-          {["Funding", "Incubation", "Tax Benefit", "Credit Support"].map(s => <option key={s} value={s}>{s}</option>)}
+          style={{ padding: "10px 16px", borderRadius: 12, background: "rgba(30,41,59,0.5)", border: "1px solid rgba(255,255,255,0.07)", color: "#e2e8f0", fontSize: 13, cursor: "pointer", appearance: "none" }}>
+          <option value="" style={{ background: "#1e293b", color: "#f8fafc" }}>All Categories</option>
+          {["Funding", "Incubation", "Tax Benefit", "Credit Support"].map(s => <option key={s} value={s} style={{ background: "#1e293b", color: "#f8fafc" }}>{s}</option>)}
         </select>
       </div>
 
@@ -496,7 +684,7 @@ function AnalyticsView({ mounted }: { mounted: boolean }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 32 }}>
         <StatCard title="Total Schemes" value={String(summary?.total_schemes ?? "...")} sub="Active Repository" icon="policy" color="#3b82f6" />
         <StatCard title="Total Budget Pool" value={fmtCurrency(summary?.total_budget ?? 0)} sub="Across tracked schemes" icon="paid" color="#22c55e" />
-        <StatCard title="Avg Scheme Funding" value={fmtCurrency(summary?.avg_funding ?? 0)} sub="Per individual scheme" icon="trending_up" color="#f59e0b" />
+        <StatCard title="Avg. Max Funding Cap" value={fmtCurrency(summary?.avg_max_funding ?? 0)} sub="Per individual scheme" icon="trending_up" color="#f59e0b" />
         <StatCard title="Funding Bodies" value={String(summary?.unique_ministries ?? "...")} sub="Ministries/Departments" icon="account_balance" color="#8b5cf6" />
       </div>
 
@@ -506,14 +694,15 @@ function AnalyticsView({ mounted }: { mounted: boolean }) {
           <h2 style={{ fontWeight: 700, fontSize: 16, color: "#fff", margin: "0 0 20px", textTransform: "uppercase", letterSpacing: "-0.02em" }}>Funding By Ministry</h2>
           <div style={{ width: '100%', height: 300 }}>
             <ResponsiveContainer>
-              <BarChart data={(funding_by_ministry||[]).slice(0, 6)} layout="vertical" margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+              <BarChart data={(funding_by_ministry||[]).slice(0, 6)} layout="vertical" margin={{ top: 5, right: 60, left: 20, bottom: 5 }}>
                 <XAxis type="number" hide />
-                <YAxis dataKey="ministry" type="category" width={140} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                <RechartsTooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12, color: '#f8fafc' }} formatter={(val: number) => [fmtCurrency(val), "Budget"]} />
-                <Bar dataKey="total_budget" radius={[0, 4, 4, 0]}>
-                  {funding_by_ministry?.map((entry: any, index: number) => (
+                <YAxis dataKey="ministry" type="category" width={140} tick={{ fontSize: 11, fill: '#fff', fontWeight: 600 }} axisLine={false} tickLine={false} />
+                <RechartsTooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12, color: '#f8fafc' }} itemStyle={{ color: '#fff' }} formatter={(val: any) => [fmtCurrency(Number(val)), "Budget"]} />
+                <Bar dataKey="total_budget" radius={[0, 4, 4, 0]} maxBarSize={32}>
+                  {funding_by_ministry?.slice(0, 6).map((entry: any, index: number) => (
                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                   ))}
+                  <LabelList dataKey="total_budget" position="right" formatter={(val: any) => fmtCurrency(val)} fill="#fff" fontSize={12} fontWeight={700} />
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
@@ -531,7 +720,7 @@ function AnalyticsView({ mounted }: { mounted: boolean }) {
                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>
-                <RechartsTooltip contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12, color: '#f8fafc' }} />
+                <RechartsTooltip contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12, color: '#f8fafc' }} itemStyle={{ color: '#fff' }} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -546,7 +735,7 @@ function AnalyticsView({ mounted }: { mounted: boolean }) {
             <ResponsiveContainer>
               <BarChart data={stage_coverage || []} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
                 <XAxis dataKey="stage" tick={{ fontSize: 12, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                <RechartsTooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12, color: '#f8fafc' }} />
+                <RechartsTooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12, color: '#f8fafc' }} itemStyle={{ color: '#fff' }} />
                 <Bar dataKey="scheme_count" fill="#6366f1" radius={[8, 8, 0, 0]} barSize={40} />
               </BarChart>
             </ResponsiveContainer>
@@ -600,12 +789,18 @@ function AlertsView({ mounted }: { mounted: boolean }) {
             <div key={alert.id || i} style={{ background: "rgba(30,41,59,0.4)", backdropFilter: "blur(12px)", borderRadius: 16, padding: 20, border: "1px solid rgba(255,255,255,0.05)", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#f59e0b", display: "inline-block" }} />
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#fbbf24" }}>Policy Update</span>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: (alert.changed_fields?.includes("all") || alert.changed_fields?.includes("new_scheme_added")) ? "#22c55e" : "#f59e0b", display: "inline-block" }} />
+                  <span style={{ fontSize: 13, fontWeight: 700, color: (alert.changed_fields?.includes("all") || alert.changed_fields?.includes("new_scheme_added")) ? "#4ade80" : "#fbbf24" }}>
+                    {(alert.changed_fields?.includes("all") || alert.changed_fields?.includes("new_scheme_added")) ? "New Scheme" : "Policy Update"}
+                  </span>
                 </div>
                 <h3 style={{ fontWeight: 700, fontSize: 15, color: "#fff", margin: "0 0 6px" }}>{alert.scheme_name}</h3>
                 <p style={{ color: "#94a3b8", fontSize: 13, margin: 0 }}>
-                  Fields changed: <strong style={{ color: "#e2e8f0" }}>{alert.changed_fields?.join(", ") || "General update"}</strong>
+                  {(alert.changed_fields?.includes("all") || alert.changed_fields?.includes("new_scheme_added")) ? (
+                    <strong style={{ color: "#e2e8f0" }}>Added to the database</strong>
+                  ) : (
+                    <>Updates detected in: <strong style={{ color: "#e2e8f0" }}>{alert.changed_fields?.join(", ") || "General properties"}</strong></>
+                  )}
                 </p>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
@@ -673,6 +868,9 @@ function SchemeCard({ scheme, featured }: { scheme: any, featured: boolean }) {
 }
 
 function SchemeDetailCard({ scheme, onClick }: { scheme: any, onClick: () => void }) {
+  const score = scheme.eligibility_score || 0;
+  const scoreColor = score >= 80 ? "#4ade80" : score >= 50 ? "#fbbf24" : "#f87171";
+  
   return (
     <div onClick={onClick} style={{ background: "rgba(30,41,59,0.4)", backdropFilter: "blur(12px)", borderRadius: 16, padding: 20, border: "1px solid rgba(255,255,255,0.05)", cursor: "pointer", transition: "border-color 0.15s, transform 0.15s", position: "relative" }}
       onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.borderColor = "rgba(59,130,246,0.3)"; (e.currentTarget as HTMLDivElement).style.transform = "translateY(-2px)"; }}
@@ -685,20 +883,15 @@ function SchemeDetailCard({ scheme, onClick }: { scheme: any, onClick: () => voi
         </span>
       )}
 
-      {/* Info Button */}
-      <button 
-        onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('open-scheme-chat', { detail: scheme })); }}
-        style={{ position: "absolute", bottom: 20, right: 20, width: 28, height: 28, borderRadius: "50%", background: "rgba(59,130,246,0.15)", border: "1px solid rgba(59,130,246,0.3)", color: "#60a5fa", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", transition: "all 0.2s" }}
-        title="Chat about this scheme"
-      >
-        <span className="material-symbols-outlined" style={{ fontSize: 16 }}>info</span>
-      </button>
-
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
         <span style={{ fontSize: 10, fontWeight: 700, color: scheme.status === "Active" ? "#4ade80" : "#94a3b8", textTransform: "uppercase", letterSpacing: "0.1em", background: scheme.status === "Active" ? "rgba(34,197,94,0.1)" : "rgba(30,41,59,0.5)", padding: "2px 8px", borderRadius: 999 }}>
           ● {scheme.status || "Active"}
         </span>
-        <span style={{ fontSize: 12, fontWeight: 700, color: "#60a5fa" }}>{fmtCurrency(scheme.max_funding_amount)}</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: scoreColor, display: 'flex', alignItems: 'center', gap: 4 }}>
+          {score > 0 && <span className="material-symbols-outlined" style={{ fontSize: 14 }}>troubleshoot</span>}
+          {score > 0 && `${score}% Match`}
+          <span style={{ color: "#60a5fa", marginLeft: 8 }}>{fmtCurrency(scheme.max_funding_amount)}</span>
+        </span>
       </div>
       <h3 style={{ fontWeight: 700, fontSize: 14, color: "#fff", margin: "0 0 6px", lineHeight: 1.3 }}>{scheme.scheme_name}</h3>
       <p style={{ color: "#64748b", fontSize: 12, margin: "0 0 12px" }}>{scheme.ministry?.split(",")[0]}</p>
@@ -714,12 +907,43 @@ function SchemeDetailCard({ scheme, onClick }: { scheme: any, onClick: () => voi
   );
 }
 
-function SchemeModal({ scheme, onClose }: { scheme: Scheme, onClose: () => void }) {
+function SchemeModal({ scheme, onClose }: { scheme: any, onClose: () => void }) {
+  const [showDetails, setShowDetails] = useState(false);
+  const [aiScore, setAiScore] = useState<any>(null);
+  const [aiScoreLoading, setAiScoreLoading] = useState(false);
+
+  const handleAIScore = async () => {
+    setAiScoreLoading(true);
+    try {
+      const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const dummyUserStr = localStorage.getItem('dummy_user');
+      const profile = dummyUserStr ? JSON.parse(dummyUserStr) : { startup_name: "Founder", sector: "All Sectors", stage: "Idea", location: "Pan-India" };
+      const res = await fetch(`${API}/evaluate-scheme`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          startup_name: profile.startup_name || "Founder",
+          sector: profile.sector || "All Sectors",
+          stage: profile.stage || "Idea",
+          state: profile.location || "Pan-India",
+          scheme_id: scheme.id
+        })
+      });
+      const data = await res.json();
+      const result = data.recommendation || data;
+      setAiScore(result);
+    } catch (e) {
+      toast.error("Failed to compute AI match score.");
+    } finally {
+      setAiScoreLoading(false);
+    }
+  };
+
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }} onClick={onClose}>
       <div style={{ background: "#0f172a", borderRadius: 24, padding: 32, maxWidth: 600, width: "90%", maxHeight: "85vh", overflowY: "auto", border: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 24px 64px rgba(0,0,0,0.5)" }} onClick={e => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
-          <span style={{ fontSize: 10, fontWeight: 700, color: "#4ade80", textTransform: "uppercase", background: "rgba(34,197,94,0.1)", padding: "3px 10px", borderRadius: 999 }}>● {scheme.status}</span>
+          <span style={{ fontSize: 10, fontWeight: 700, color: scheme.status === "Active" ? "#4ade80" : "#94a3b8", textTransform: "uppercase", background: scheme.status === "Active" ? "rgba(34,197,94,0.1)" : "rgba(30,41,59,0.5)", padding: "3px 10px", borderRadius: 999 }}>● {scheme.status || "Active"}</span>
           <button onClick={onClose} style={{ background: "rgba(30,41,59,0.5)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "50%", width: 32, height: 32, cursor: "pointer", color: "#94a3b8", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
         </div>
         <h2 style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 22, color: "#fff", margin: "0 0 6px", lineHeight: 1.2 }}>{scheme.scheme_name}</h2>
@@ -734,20 +958,123 @@ function SchemeModal({ scheme, onClose }: { scheme: Scheme, onClose: () => void 
           <InfoItem label="Launch Year" value={String((scheme as any).launch_year || "-")} />
         </div>
 
-        <div style={{ marginBottom: 16 }}>
-          <p style={{ fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>About this Scheme</p>
-          <p style={{ color: "#94a3b8", fontSize: 14, lineHeight: 1.7 }}>{scheme.nlp_summary || "No summary available."}</p>
-        </div>
+        {showDetails ? (
+          <div style={{ marginTop: 24, padding: 20, background: "rgba(30,41,59,0.5)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.05)" }}>
+            <div style={{ marginBottom: 16 }}>
+              <p style={{ fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>About this Scheme</p>
+              <p style={{ color: "#94a3b8", fontSize: 14, lineHeight: 1.7 }}>{scheme.nlp_summary || "No summary available."}</p>
+            </div>
+            {(() => {
+              let reqDocs: any[] = Array.isArray(scheme.required_documents) ? [...scheme.required_documents] :
+                                   typeof scheme.required_documents === 'string' ? [scheme.required_documents] : [];
+              
+              reqDocs = reqDocs.flatMap((d: any) => {
+                if (typeof d === 'string') {
+                  try {
+                    let parsed = JSON.parse(d.replace(/'/g, '"'));
+                    if (Array.isArray(parsed)) return parsed.map(String);
+                  } catch(e) {}
+                  let str = d.replace(/^\[+/, '').replace(/\]+$/, '');
+                  return str.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '').trim()).filter(Boolean);
+                }
+                return String(d);
+              }).filter(Boolean);
 
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
-          {(scheme.startup_stage || []).map((s: string) => <Tag key={s} label={s} color="#f59e0b" />)}
-          {(scheme.sector_eligibility || []).map((s: string) => <Tag key={s} label={s} color="#3b82f6" />)}
-        </div>
+              return reqDocs.length > 0 ? (
+                <div style={{ marginBottom: 16 }}>
+                  <p style={{ fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Required Documents</p>
+                  <ul style={{ color: "#94a3b8", fontSize: 13, paddingLeft: 20, margin: 0, lineHeight: 1.5 }}>
+                    {reqDocs.map((doc: string, idx: number) => <li key={idx}>{doc}</li>)}
+                  </ul>
+                </div>
+              ) : null;
+            })()}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+              {(scheme.startup_stage || []).map((s: string) => <Tag key={s} label={s} color="#f59e0b" />)}
+              {(scheme.sector_eligibility || []).map((s: string) => <Tag key={s} label={s} color="#3b82f6" />)}
+            </div>
 
-        <a href={scheme.application_portal || "#"} target="_blank" rel="noopener noreferrer"
-          style={{ display: "block", textAlign: "center", padding: "14px 24px", background: "#2563eb", color: "#fff", borderRadius: 12, fontWeight: 700, fontSize: 14, textDecoration: "none", boxShadow: "0 0 20px rgba(37,99,235,0.3)" }}>
-          Apply for this Scheme →
-        </a>
+            <button 
+              onClick={() => { onClose(); window.dispatchEvent(new CustomEvent('open-scheme-chat', { detail: scheme })); }}
+              style={{ width: "100%", padding: "12px", background: "rgba(59,130,246,0.15)", border: "1px solid rgba(59,130,246,0.3)", borderRadius: 12, color: "#60a5fa", fontSize: 14, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer" }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 18 }}>chat</span>
+              Have more questions? Ask AI
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+            {(scheme.startup_stage || []).slice(0,2).map((s: string) => <Tag key={s} label={s} color="#f59e0b" />)}
+            {(scheme.sector_eligibility || []).slice(0,2).map((s: string) => <Tag key={s} label={s} color="#3b82f6" />)}
+          </div>
+        )}
+
+        {/* AI Match Score Section */}
+        {aiScore ? (
+          <div style={{ marginTop: 20, background: "rgba(168,85,247,0.06)", borderRadius: 16, padding: "18px 20px", border: "1px solid rgba(168,85,247,0.15)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+              <div style={{ width: 48, height: 48, borderRadius: "50%", background: `rgba(${(aiScore.eligibility_score || 0) >= 80 ? '74,222,128' : (aiScore.eligibility_score || 0) >= 50 ? '251,191,36' : '248,113,113'}, 0.1)`, border: `2px solid ${(aiScore.eligibility_score || 0) >= 80 ? '#4ade80' : (aiScore.eligibility_score || 0) >= 50 ? '#fbbf24' : '#f87171'}40`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <span style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 16, color: (aiScore.eligibility_score || 0) >= 80 ? "#4ade80" : (aiScore.eligibility_score || 0) >= 50 ? "#fbbf24" : "#f87171" }}>{aiScore.eligibility_score || 0}%</span>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "#a855f7", textTransform: "uppercase", letterSpacing: "0.08em" }}>AI Eligibility Score</div>
+                <div style={{ fontSize: 12, color: "#94a3b8" }}>{(aiScore.eligibility_score || 0) >= 80 ? "Strong match" : (aiScore.eligibility_score || 0) >= 50 ? "Partial match" : "Weak match"}</div>
+              </div>
+            </div>
+            <p style={{ fontSize: 13, color: "#e2e8f0", lineHeight: 1.6, margin: 0 }}>{aiScore.why_eligible_reasoning || "Analysis complete."}</p>
+          </div>
+        ) : (
+          <button
+            onClick={handleAIScore}
+            disabled={aiScoreLoading}
+            style={{
+              marginTop: 20, width: "100%", padding: "12px", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+              background: "rgba(168,85,247,0.08)", border: "1px solid rgba(168,85,247,0.2)", borderRadius: 12,
+              color: "#c084fc", fontSize: 13, fontWeight: 700, cursor: aiScoreLoading ? "not-allowed" : "pointer",
+              transition: "all 0.2s"
+            }}
+            onMouseEnter={e => { if (!aiScoreLoading) e.currentTarget.style.background = "rgba(168,85,247,0.15)"; }}
+            onMouseLeave={e => e.currentTarget.style.background = "rgba(168,85,247,0.08)"}
+          >
+            {aiScoreLoading ? (
+              <><span className="material-symbols-outlined spinner" style={{ fontSize: 16 }}>sync</span> Analyzing eligibility...</>
+            ) : (
+              <><span className="material-symbols-outlined" style={{ fontSize: 16 }}>troubleshoot</span> Check AI Match Score</>
+            )}
+          </button>
+        )}
+
+        <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+          <button onClick={() => setShowDetails(!showDetails)}
+            style={{ flex: 1, padding: "14px", background: "rgba(30,41,59,0.5)", border: "1px solid rgba(255,255,255,0.1)", color: "#fff", borderRadius: 12, fontWeight: 700, fontSize: 14, cursor: "pointer", transition: "all 0.2s" }}
+            onMouseEnter={e => (e.currentTarget.style.background = "rgba(30,41,59,0.8)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "rgba(30,41,59,0.5)")}>
+            {showDetails ? "Hide Details" : "View Details"}
+          </button>
+          <button onClick={async () => {
+              try {
+                const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+                const dummyUserStr = localStorage.getItem('dummy_user');
+                let email = "founder@example.com";
+                if (dummyUserStr) email = JSON.parse(dummyUserStr).startup_name;
+                toast.loading("Tracking application...");
+                await fetch(`${API}/applications`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ user_email: email, scheme_id: scheme.id, status: "interested" })
+                });
+                toast.dismiss();
+                toast.success("Application tracked in Tracker!");
+                window.open(scheme.application_portal || "#", "_blank");
+              } catch(e) {
+                toast.dismiss();
+                toast.error("Failed to track application.");
+              }
+            }}
+            style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", padding: "14px", background: "#2563eb", border: "none", color: "#fff", borderRadius: 12, fontWeight: 700, fontSize: 14, cursor: "pointer", boxShadow: "0 0 20px rgba(37,99,235,0.3)" }}>
+            Apply →
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -916,7 +1243,234 @@ function LocalAgentChatbot({ profile }: { profile: any }) {
           from { opacity: 0; transform: translateY(20px) scale(0.95); }
           to { opacity: 1; transform: translateY(0) scale(1); }
         }
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        .spinner { animation: spin 1.5s linear infinite; }
       `}</style>
     </>
+  );
+}
+
+function SchemeDetailLoader({ schemeId, onClose }: { schemeId: string, onClose: () => void }) {
+  const { data: scheme, loading } = useAPI<any>(`/schemes/${schemeId}`);
+  
+  if (loading) return null; 
+  if (!scheme) {
+    onClose();
+    return null;
+  }
+
+  return <SchemeModal scheme={scheme} onClose={onClose} />;
+}
+
+// ══════════════════════════════════════════
+// ELIGIBILITY INTELLIGENCE DETAIL MODAL
+// Premium full-screen modal for AI Match details
+// ══════════════════════════════════════════
+function EligibilityDetailModal({ rec, onClose }: { rec: any, onClose: () => void }) {
+  const score = rec.eligibility_score || 0;
+  const scoreColor = score >= 80 ? "#4ade80" : score >= 50 ? "#fbbf24" : "#f87171";
+  const scoreBg = score >= 80 ? "rgba(74,222,128,0.1)" : score >= 50 ? "rgba(251,191,36,0.1)" : "rgba(248,113,113,0.1)";
+  
+  // Parse documents checklist
+  let docs: any[] = Array.isArray(rec.documents_checklist) ? [...rec.documents_checklist] : 
+                    typeof rec.documents_checklist === 'string' ? [rec.documents_checklist] : [];
+  
+  docs = docs.flatMap((d: any) => {
+    if (typeof d === 'string') {
+      try {
+        let parsed = JSON.parse(d.replace(/'/g, '"'));
+        if (Array.isArray(parsed)) return parsed.map(String);
+      } catch(e) {}
+      // Brute force unescape
+      let str = d.replace(/^\[+/, '').replace(/\]+$/, '');
+      return str.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '').trim()).filter(Boolean);
+    }
+    return String(d);
+  }).filter(Boolean);
+  
+  const [checkedDocs, setCheckedDocs] = useState<Set<number>>(new Set());
+  const toggleDoc = (i: number) => {
+    setCheckedDocs(prev => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+  };
+
+  // Animated score ring
+  const circumference = 2 * Math.PI * 54; // radius=54
+  const [animatedOffset, setAnimatedOffset] = useState(circumference);
+  useEffect(() => {
+    const target = circumference - (score / 100) * circumference;
+    const timer = setTimeout(() => setAnimatedOffset(target), 100);
+    return () => clearTimeout(timer);
+  }, [score, circumference]);
+
+  return (
+    <div 
+      style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.75)", backdropFilter: "blur(8px)", animation: "fadeIn 0.2s ease-out" }} 
+      onClick={onClose}
+    >
+      <div 
+        style={{ background: "linear-gradient(180deg, #0f172a 0%, #0a0e1a 100%)", borderRadius: 28, padding: 0, maxWidth: 640, width: "92%", maxHeight: "90vh", overflowY: "auto", border: "1px solid rgba(168,85,247,0.15)", boxShadow: "0 32px 80px rgba(0,0,0,0.6), 0 0 60px rgba(168,85,247,0.08)", animation: "modalSlideUp 0.35s cubic-bezier(0.16, 1, 0.3, 1)" }} 
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Top gradient bar */}
+        <div style={{ height: 3, background: `linear-gradient(90deg, ${scoreColor}, #a855f7, #3b82f6)`, borderRadius: "28px 28px 0 0" }} />
+        
+        {/* Header */}
+        <div style={{ padding: "28px 32px 0" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <span style={{ fontSize: 10, fontWeight: 800, color: "#a855f7", textTransform: "uppercase", letterSpacing: "0.12em", background: "rgba(168,85,247,0.1)", padding: "3px 10px", borderRadius: 999, border: "1px solid rgba(168,85,247,0.2)" }}>AI Intelligence Report</span>
+                {rec.deadline_status && <span style={{ fontSize: 10, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.1)", padding: "3px 8px", borderRadius: 999 }}>{rec.deadline_status}</span>}
+              </div>
+              <h2 style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 24, color: "#fff", margin: "0 0 4px", lineHeight: 1.2 }}>{rec.name}</h2>
+              <p style={{ color: "#64748b", fontSize: 13, margin: 0 }}>{rec.reason}</p>
+            </div>
+            <button onClick={onClose} style={{ background: "rgba(30,41,59,0.5)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "50%", width: 36, height: 36, cursor: "pointer", color: "#94a3b8", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginLeft: 16 }}>✕</button>
+          </div>
+        </div>
+
+        {/* Score + Reasoning Section */}
+        <div style={{ padding: "24px 32px", display: "flex", gap: 24, alignItems: "center" }}>
+          {/* Animated Score Ring */}
+          <div style={{ position: "relative", width: 130, height: 130, flexShrink: 0 }}>
+            <svg width="130" height="130" viewBox="0 0 120 120">
+              {/* Background ring */}
+              <circle cx="60" cy="60" r="54" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="8" />
+              {/* Score ring */}
+              <circle 
+                cx="60" cy="60" r="54" fill="none" stroke={scoreColor} strokeWidth="8"
+                strokeDasharray={circumference} strokeDashoffset={animatedOffset}
+                strokeLinecap="round" transform="rotate(-90 60 60)"
+                style={{ transition: "stroke-dashoffset 1.2s cubic-bezier(0.34, 1.56, 0.64, 1)" }}
+              />
+            </svg>
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ fontFamily: '"Manrope",sans-serif', fontWeight: 900, fontSize: 36, color: scoreColor, lineHeight: 1 }}>{score}</span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em" }}>Eligible</span>
+            </div>
+          </div>
+
+          {/* AI Reasoning */}
+          <div style={{ flex: 1, background: scoreBg, borderRadius: 16, padding: "18px 20px", border: `1px solid ${scoreColor}22`, position: "relative" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 18, color: scoreColor }}>psychology</span>
+              <span style={{ fontSize: 11, fontWeight: 800, color: scoreColor, textTransform: "uppercase", letterSpacing: "0.08em" }}>AI Eligibility Analysis</span>
+            </div>
+            <p style={{ color: "#e2e8f0", fontSize: 14, lineHeight: 1.7, margin: 0, fontWeight: 500 }}>
+              {rec.why_eligible_reasoning || "Eligibility analysis is being processed..."}
+            </p>
+          </div>
+        </div>
+
+        {/* Funding Intelligence Cards */}
+        <div style={{ padding: "0 32px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <div style={{ background: "rgba(34,197,94,0.06)", borderRadius: 16, padding: "18px 20px", border: "1px solid rgba(34,197,94,0.1)" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Funding Type</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 28, color: "#4ade80" }}>
+                {(rec.equity_type || "").toLowerCase().includes("equity") ? "trending_up" : (rec.equity_type || "").toLowerCase().includes("loan") ? "account_balance" : "volunteer_activism"}
+              </span>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 900, color: "#fff" }}>{rec.equity_type || "Grant"}</div>
+                <div style={{ fontSize: 11, color: "#64748b" }}>No equity dilution</div>
+              </div>
+            </div>
+          </div>
+          <div style={{ background: "rgba(59,130,246,0.06)", borderRadius: 16, padding: "18px 20px", border: "1px solid rgba(59,130,246,0.1)" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Disbursement</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 28, color: "#60a5fa" }}>
+                {(rec.disbursement_structure || "").toLowerCase().includes("milestone") ? "stacked_bar_chart" : "payments"}
+              </span>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 900, color: "#fff" }}>{rec.disbursement_structure || "Milestone-based"}</div>
+                <div style={{ fontSize: 11, color: "#64748b" }}>Structured release</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Documents Checklist */}
+        {docs.length > 0 && (
+          <div style={{ padding: "24px 32px 0" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 18, color: "#a855f7" }}>checklist</span>
+                <span style={{ fontSize: 12, fontWeight: 800, color: "#fff", textTransform: "uppercase", letterSpacing: "0.08em" }}>Document Readiness</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ width: 120, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.round((checkedDocs.size / Math.max(1, docs.length)) * 100)}%`, height: "100%", background: checkedDocs.size === docs.length ? "#4ade80" : "#a855f7", transition: "width 0.3s ease, background 0.3s ease" }} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+                  <span style={{ fontSize: 14, color: checkedDocs.size === docs.length ? "#4ade80" : "#fff", fontWeight: 900, lineHeight: 1 }}>{Math.round((checkedDocs.size / Math.max(1, docs.length)) * 100)}%</span>
+                  <span style={{ fontSize: 9, color: "#64748b", fontWeight: 700, textTransform: "uppercase", marginTop: 3, lineHeight: 1 }}>Prepared</span>
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {docs.map((doc, i) => (
+                <div 
+                  key={i}
+                  onClick={() => toggleDoc(i)}
+                  style={{ 
+                    display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", 
+                    background: checkedDocs.has(i) ? "rgba(74,222,128,0.06)" : "rgba(15,23,42,0.4)", 
+                    borderRadius: 12, cursor: "pointer", transition: "all 0.15s",
+                    border: checkedDocs.has(i) ? "1px solid rgba(74,222,128,0.15)" : "1px solid rgba(255,255,255,0.03)"
+                  }}
+                >
+                  <div style={{ 
+                    width: 22, height: 22, borderRadius: 6, 
+                    background: checkedDocs.has(i) ? "#4ade80" : "rgba(30,41,59,0.8)", 
+                    border: checkedDocs.has(i) ? "none" : "2px solid rgba(255,255,255,0.1)",
+                    display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                    transition: "all 0.2s"
+                  }}>
+                    {checkedDocs.has(i) && <span style={{ color: "#000", fontSize: 14, fontWeight: 900 }}>✓</span>}
+                  </div>
+                  <span style={{ fontSize: 13, color: checkedDocs.has(i) ? "#94a3b8" : "#e2e8f0", fontWeight: 500, textDecoration: checkedDocs.has(i) ? "line-through" : "none", transition: "all 0.15s" }}>{doc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Action Bar */}
+        <div style={{ padding: "24px 32px 28px", display: "flex", gap: 12 }}>
+          <button 
+            onClick={() => { rec.application_url && window.open(rec.application_url, "_blank"); }}
+            style={{ flex: 2, padding: "16px", background: docs.length === 0 || checkedDocs.size === docs.length ? "linear-gradient(135deg, #10b981 0%, #059669 100%)" : "linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)", border: "none", color: "#fff", borderRadius: 14, fontWeight: 800, fontSize: 15, cursor: "pointer", boxShadow: docs.length === 0 || checkedDocs.size === docs.length ? "0 8px 32px rgba(16,185,129,0.3)" : "0 8px 32px rgba(37,99,235,0.3)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "all 0.2s" }}
+            onMouseEnter={e => e.currentTarget.style.transform = "translateY(-1px)"}
+            onMouseLeave={e => e.currentTarget.style.transform = "none"}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 20 }}>rocket_launch</span>
+            {rec.action || "Apply Now"} {docs.length > 0 && checkedDocs.size < docs.length && <span style={{ fontSize: 11, background: "rgba(0,0,0,0.2)", padding: "4px 8px", borderRadius: 6, marginLeft: 4 }}>{Math.round((checkedDocs.size / Math.max(1, docs.length)) * 100)}% Ready</span>}
+          </button>
+          <button 
+            onClick={() => { onClose(); window.dispatchEvent(new CustomEvent('open-scheme-chat', { detail: { id: rec.scheme_id, scheme_name: rec.name } })); }}
+            style={{ flex: 1, padding: "16px", background: "rgba(30,41,59,0.5)", border: "1px solid rgba(255,255,255,0.1)", color: "#60a5fa", borderRadius: 14, fontWeight: 700, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>chat</span>
+            Ask AI
+          </button>
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes modalSlideUp {
+          from { opacity: 0; transform: translateY(30px) scale(0.96); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+      `}</style>
+    </div>
   );
 }

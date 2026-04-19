@@ -17,7 +17,7 @@ async def scrape_sidbi():
             raw_data = {
                 "title": title,
                 "schemes": schemes,
-                "html_snippet": str(soup.body)[:1000]
+                "html_snippet": str(soup.body)[:15000]
             }
             insert_into_bronze(url, raw_data)
     except Exception as e:

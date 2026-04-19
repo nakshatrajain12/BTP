@@ -36,7 +36,7 @@ def run_change_detection():
                     if old_values.get(k) != v:
                         changed_fields.append(k)
             else:
-                changed_fields = ["all"]
+                changed_fields = ["new_scheme_added"]
                 
             try:
                 supabase.table("scheme_versions").insert({

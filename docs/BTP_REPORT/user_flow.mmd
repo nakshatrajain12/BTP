@@ -1,0 +1,57 @@
+flowchart TD
+    %% Styling
+    classDef userAction fill:#0284c7,stroke:#0369a1,stroke-width:2px,color:#fff
+    classDef engineAction fill:#b91c1c,stroke:#991b1b,stroke-width:2px,color:#fff
+    classDef uiView fill:#0f766e,stroke:#047857,stroke-width:2px,color:#fff
+    classDef backendAction fill:#4338ca,stroke:#3730a3,stroke-width:2px,color:#fff
+
+    %% Step 1: Auth
+    Start([User Visits GOV-DASH]) --> A
+    A(1. Sign Up / Log In) --> B{Supabase Auth}
+    B -->|Valid Token| C
+    B -->|Invalid| A
+
+    %% Step 2: Profile
+    C[2. Setup Startup Profile] -->|Input: Sector| DB[(Postgres User DB)]
+    C -->|Input: Stage| DB
+    C -->|Input: Location| DB
+    
+    %% Step 3: Matching Engine Hit
+    DB --> D[3. Access Dashboard]
+    D --> E{Local Matching Engine}
+    
+    %% Engine Details
+    subgraph Heuristic Matching Engine
+    E -->|Base Score| M1(10% Default Match)
+    E -->|Sector| M2(25% Match)
+    E -->|Stage| M3(25% Match)
+    E -->|Geo/Location| M4(15% Match)
+    M1 & M2 & M3 & M4 --> SCORE((Final Match %))
+    end
+
+    SCORE --> F
+
+    %% Step 4: The UI Deliverables
+    subgraph Dashboard UI Render
+    F[4. Render 4 Core UI Panels] --> UI1[A. Recommender List Sorted by Score]
+    F --> UI2[B. Funding Landscape Canvas Recharts]
+    F --> UI3[C. Sector/Stage Macro Analytics]
+    F --> UI4[D. Delta Alerts & Tracker Notifications]
+    end
+
+    %% Step 5: Deep Interaction
+    UI1 --> G[5. Click Specific Scheme]
+    G --> H[Open Eligibility Modal]
+    
+    H --> I[Check Document Boxes]
+    I --> J(Update Progress Bar Math: Checked/Total)
+    
+    H --> K[Ask Question to AI]
+    K --> L(POST /api/chat context)
+    L --> M[Return LLM Generated Answer]
+
+    %% Apply External Classes
+    class A,C,D,G,I,K userAction
+    class E,SCORE,J,M1,M2,M3,M4 engineAction
+    class F,UI1,UI2,UI3,UI4,H,M uiView
+    class B,DB,L backendAction

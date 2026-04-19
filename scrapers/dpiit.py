@@ -19,7 +19,7 @@ async def scrape_dpiit():
             raw_data = {
                 "title": title,
                 "announcements": announcements,
-                "html_snippet": str(soup.body)[:1000] # just an example for MVP
+                "html_snippet": str(soup.body)[:15000] # just an example for MVP
             }
             insert_into_bronze(url, raw_data)
     except Exception as e:
