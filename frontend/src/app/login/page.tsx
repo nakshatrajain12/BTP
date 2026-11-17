@@ -18,29 +18,72 @@ export default function LoginPage({
   const [error, setError] = useState(params.message || '');
   const router = useRouter();
 
-  const supabase = createBrowserClient(
+  const supabase = React.useMemo(() => createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  ), []);
+
+  // If already authenticated locally, navigate to dashboard immediately
+  React.useEffect(() => {
+    const dummyUser = localStorage.getItem('dummy_user');
+    if (dummyUser) {
+      window.location.href = '/';
+    }
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
-    // BYPASS: Mock login
-    const dummyUserStr = localStorage.getItem('dummy_user');
-    if (!dummyUserStr) {
-      // Set some fallback just so login works if no account was explicitly created locally
+    try {
+      // 1. Try real Supabase auth if credentials are provided
+      if (email && password) {
+        try {
+          const { data, error: sbError } = await supabase.auth.signInWithPassword({
+            email,
+            password,
+          });
+
+          if (!sbError && data?.user) {
+            document.cookie = "dummy_session=true; path=/; max-age=604800; SameSite=Lax";
+            const metadata = data.user.user_metadata || {};
+            localStorage.setItem('dummy_user', JSON.stringify({
+              startup_name: metadata.startup_name || email.split('@')[0].toUpperCase(),
+              sector: metadata.sector || "Deeptech",
+              stage: metadata.stage || "Idea",
+              location: metadata.location || "Pan-India",
+              email: email
+            }));
+            window.location.href = '/';
+            return;
+          }
+        } catch (sbErr) {
+          console.warn("Supabase auth attempted, falling back to local session:", sbErr);
+        }
+      }
+
+      // 2. Fallback / Mock login for instant demo access
+      const companyName = email.split('@')[0].replace(/[^a-zA-Z0-9]/g, ' ');
+      const formattedName = companyName ? (companyName.charAt(0).toUpperCase() + companyName.slice(1)) : "Founder";
+
       localStorage.setItem('dummy_user', JSON.stringify({
-        startup_name: "Test Founder",
+        startup_name: formattedName,
         sector: "Deeptech",
+        stage: "Idea",
+        location: "Pan-India",
         email: email
       }));
-    }
 
-    router.push('/');
-    router.refresh();
+      // Set session cookie for SSR & middleware compatibility
+      document.cookie = "dummy_session=true; path=/; max-age=604800; SameSite=Lax";
+
+      // Full page redirect to ensure fresh hydration
+      window.location.href = '/';
+    } catch (err: any) {
+      setError(err?.message || 'Login failed. Please try again.');
+      setLoading(false);
+    }
   };
 
   const handleGoogleSignIn = async () => {

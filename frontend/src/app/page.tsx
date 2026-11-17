@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useRouter } from "next/navigation";
 import { Toaster, toast } from "sonner";
@@ -118,40 +118,52 @@ export default function App() {
   const [selectedRec, setSelectedRec] = useState<any | null>(null);  // Full AI recommendation data for eligibility modal
   const router = useRouter();
 
-  const supabase = createBrowserClient(
+  const supabase = useMemo(() => createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  ), []);
 
   useEffect(() => { 
     setMounted(true); 
     const getUser = async () => {
-      // Check for bypassed dummy auth first
+      // 1. Check local session
       const dummyUserStr = localStorage.getItem('dummy_user');
       if (dummyUserStr) {
-        const dummyUser = JSON.parse(dummyUserStr);
-        setUserProfile({
-          startupName: dummyUser.startup_name || "Founder",
-          sector: dummyUser.sector || "All Sectors",
-          stage: dummyUser.stage || "Idea",
-          location: dummyUser.location || "Pan-India"
-        });
-      } else {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user?.user_metadata) {
+        try {
+          const dummyUser = JSON.parse(dummyUserStr);
           setUserProfile({
-            startupName: user.user_metadata.startup_name || "Founder",
-            sector: user.user_metadata.sector || "All Sectors",
-            stage: user.user_metadata.stage || "Idea",
-            location: user.user_metadata.location || "Pan-India"
+            startupName: dummyUser.startup_name || "Founder",
+            sector: dummyUser.sector || "All Sectors",
+            stage: dummyUser.stage || "Idea",
+            location: dummyUser.location || "Pan-India"
           });
-        } else {
-          router.push('/login');
-        }
+          return;
+        } catch {}
       }
+
+      // 2. Check Supabase auth
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const meta = user.user_metadata || {};
+          const fallbackName = meta.startup_name || meta.full_name || (user.email ? user.email.split('@')[0] : "Founder");
+          setUserProfile({
+            startupName: fallbackName,
+            sector: meta.sector || "All Sectors",
+            stage: meta.stage || "Idea",
+            location: meta.location || "Pan-India"
+          });
+          return;
+        }
+      } catch (e) {
+        console.warn("Auth check failed:", e);
+      }
+
+      // 3. Not logged in -> redirect to login
+      router.push('/login');
     };
     getUser();
-  }, [supabase]);
+  }, [router, supabase]);
 
   if (!mounted) {
     return (
@@ -161,9 +173,12 @@ export default function App() {
 
   const handleLogout = async () => {
     localStorage.removeItem('dummy_user');
-    await supabase.auth.signOut();
+    document.cookie = "dummy_session=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;";
+    try {
+      await supabase.auth.signOut();
+    } catch {}
     toast.success("Signed out successfully");
-    setTimeout(() => { router.push("/login"); router.refresh(); }, 800);
+    setTimeout(() => { window.location.href = "/login"; }, 500);
   };
 
   return (

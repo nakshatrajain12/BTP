@@ -1,5 +1,6 @@
 'use server'
 
+import { headers } from 'next/headers'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
@@ -7,14 +8,19 @@ import { Provider } from '@supabase/supabase-js'
 
 export async function loginWithOAuth(provider: Provider) {
   const supabase = await createClient()
+  const headersList = await headers()
+  const host = headersList.get('host') || 'localhost:3000'
+  const proto = headersList.get('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https')
+  const origin = process.env.NEXT_PUBLIC_SITE_URL || `${proto}://${host}`
+
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider,
     options: {
-      redirectTo: `${process.env.NEXT_PUBLIC_API_URL ? process.env.NEXT_PUBLIC_API_URL.replace('/api', '') : 'http://localhost:3000'}/auth/callback`,
+      redirectTo: `${origin}/auth/callback`,
     },
   })
 
-  if (data.url) {
+  if (data?.url) {
     redirect(data.url)
   }
 }

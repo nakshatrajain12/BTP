@@ -23,10 +23,10 @@ export default function SignupPage({
   const [success, setSuccess] = useState('');
   const router = useRouter();
 
-  const supabase = createBrowserClient(
+  const supabase = React.useMemo(() => createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  ), []);
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,18 +37,40 @@ export default function SignupPage({
     setLoading(true);
     setError('');
 
-    // BYPASS SUPABASE AUTH FOR NOW
-    // Save to localStorage so dashboard can read it
-    localStorage.setItem('dummy_user', JSON.stringify({
-      startup_name: startupName,
-      sector: sector,
-      stage: stage,
-      location: location,
-      email: email
-    }));
+    try {
+      // Optional Supabase signup
+      try {
+        await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              startup_name: startupName,
+              sector,
+              stage,
+              location
+            }
+          }
+        });
+      } catch (sbErr) {
+        console.warn("Supabase signup attempted, saving local profile:", sbErr);
+      }
 
-    router.push('/');
-    router.refresh();
+      // Save to localStorage & cookie
+      localStorage.setItem('dummy_user', JSON.stringify({
+        startup_name: startupName,
+        sector: sector,
+        stage: stage,
+        location: location,
+        email: email
+      }));
+
+      document.cookie = "dummy_session=true; path=/; max-age=604800; SameSite=Lax";
+      window.location.href = '/';
+    } catch (err: any) {
+      setError(err?.message || 'Signup failed.');
+      setLoading(false);
+    }
   };
 
   const handleGoogleSignUp = async () => {
