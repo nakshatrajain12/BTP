@@ -28,11 +28,17 @@ function invalidateCache(keyPattern?: string) {
   }
 }
 
+// ═══════════════════════════════════════════════════
+// SUPABASE CLIENT CONFIG (WITH SECURE ZERO-CONFIG FALLBACK)
+// ═══════════════════════════════════════════════════
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://akmobppxfzdsspvztgmu.supabase.co";
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFrbW9icHB4Znpkc3Nwdnp0Z211Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTg1MzI0MSwiZXhwIjoyMDkxNDI5MjQxfQ.NCk9pusp48Fbp6WS5-dUncCq8CuuavNAIv2VQ2Nqe2s";
+
 async function fetchSupabaseFallback(url: string, opts?: RequestInit): Promise<any> {
   try {
     const supabase = createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      SUPABASE_URL,
+      SUPABASE_ANON_KEY
     );
 
     if (url === "/analytics/summary") {
@@ -181,34 +187,47 @@ function useAPI<T>(url: string, opts?: RequestInit) {
     // Deduplicate: if this exact request is already in-flight, wait for it
     let promise = INFLIGHT.get(cacheKey);
     if (!promise) {
-      const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      promise = fetch(`${API}${url}`, opts)
-        .then(async (r) => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          const json = await r.json();
-          // If summary returns 0 or schemes returns empty array, seamlessly recover from Supabase directly!
-          if (url === "/analytics/summary" && (!json || json.total_schemes === 0)) {
-            const fallback = await fetchSupabaseFallback(url, opts);
-            if (fallback) return fallback;
-          }
-          if (url.startsWith("/schemes") && (!json?.schemes || json.schemes.length === 0)) {
-            const fallback = await fetchSupabaseFallback(url, opts);
-            if (fallback) return fallback;
-          }
-          if (url === "/opportunity-radar" && (!json?.radar_schemes || json.radar_schemes.length === 0)) {
-            const fallback = await fetchSupabaseFallback(url, opts);
-            if (fallback) return fallback;
-          }
-          return json;
-        })
-        .catch(async (fetchErr) => {
-          // If backend API is not running or fails, query Supabase directly!
-          const fallback = await fetchSupabaseFallback(url, opts);
-          if (fallback !== null) {
-            return fallback;
-          }
-          throw fetchErr;
+      const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
+      const configuredApi = process.env.NEXT_PUBLIC_API_URL;
+      const hasSecureApi = Boolean(configuredApi && configuredApi.startsWith("https://"));
+
+      // If loaded on HTTPS (e.g. Vercel) and no HTTPS backend is provided,
+      // bypass insecure localhost calls to avoid browser Mixed Content blocking!
+      if (isHttps && !hasSecureApi) {
+        promise = fetchSupabaseFallback(url, opts).then(data => {
+          if (data) return data;
+          throw new Error("No data returned from database");
         });
+      } else {
+        const API = configuredApi || "http://localhost:8000";
+        promise = fetch(`${API}${url}`, opts)
+          .then(async (r) => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const json = await r.json();
+            // If summary returns 0 or schemes returns empty array, seamlessly recover from Supabase directly!
+            if (url === "/analytics/summary" && (!json || json.total_schemes === 0)) {
+              const fallback = await fetchSupabaseFallback(url, opts);
+              if (fallback) return fallback;
+            }
+            if (url.startsWith("/schemes") && (!json?.schemes || json.schemes.length === 0)) {
+              const fallback = await fetchSupabaseFallback(url, opts);
+              if (fallback) return fallback;
+            }
+            if (url === "/opportunity-radar" && (!json?.radar_schemes || json.radar_schemes.length === 0)) {
+              const fallback = await fetchSupabaseFallback(url, opts);
+              if (fallback) return fallback;
+            }
+            return json;
+          })
+          .catch(async (fetchErr) => {
+            // If backend API is not running or fails, query Supabase directly!
+            const fallback = await fetchSupabaseFallback(url, opts);
+            if (fallback !== null) {
+              return fallback;
+            }
+            throw fetchErr;
+          });
+      }
       INFLIGHT.set(cacheKey, promise);
     }
 
@@ -279,8 +298,8 @@ export default function App() {
   const router = useRouter();
 
   const supabase = useMemo(() => createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    SUPABASE_URL,
+    SUPABASE_ANON_KEY
   ), []);
 
   useEffect(() => { 
