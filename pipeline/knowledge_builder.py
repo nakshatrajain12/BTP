@@ -1,11 +1,15 @@
 import json
 from scrapers.base_scraper import supabase
 
-def build_general_knowledge_context() -> str:
+def build_general_knowledge_context(schemes: list | None = None) -> str:
     try:
-        # Fetch data for insights
-        schemes_res = supabase.table("schemes_clean").select("id, ministry, startup_stage, category, funding_type, geographic_restriction").execute()
-        schemes = schemes_res.data or []
+        # Fetch data for insights if not supplied
+        if schemes is None:
+            try:
+                schemes_res = supabase.table("schemes_clean").select("id, ministry, startup_stage, category, funding_type, geographic_restriction").execute()
+                schemes = schemes_res.data or []
+            except Exception:
+                schemes = []
         
         total_schemes = len(schemes)
         if total_schemes == 0:

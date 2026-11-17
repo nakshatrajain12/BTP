@@ -591,11 +591,19 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 async def general_chat(req: ChatRequest):
     try:
-        context = build_general_knowledge_context()
+        schemes = None
+        res = safe_query(lambda sb: sb.table("schemes_clean").select("id, ministry, startup_stage, category, funding_type, geographic_restriction").execute())
+        if res and res.data:
+            schemes = res.data
+        else:
+            schemes = get_local_schemes()
+            
+        context = build_general_knowledge_context(schemes)
         hist_list = [{"role": msg.role, "content": msg.content} for msg in req.history]
         response = chat_with_agent(req.message, hist_list, context)
         return {"response": response}
-    except Exception:
+    except Exception as e:
+        traceback.print_exc()
         return {"response": "I'm having trouble connecting right now. Please try again in a moment."}
 
 
@@ -607,17 +615,42 @@ class SchemeChatRequest(BaseModel):
 @app.post("/chat/scheme")
 async def chat_about_scheme(req: SchemeChatRequest):
     try:
+        scheme_data = None
+        # 1. Try finding in Supabase by ID
         scheme_res = safe_query(lambda sb: sb.table("schemes_clean").select("*").eq("id", req.scheme_id).execute())
-        if not scheme_res.data:
-            raise HTTPException(status_code=404, detail="Scheme not found")
-        context = build_scheme_knowledge_context(scheme_res.data[0])
+        if scheme_res and scheme_res.data:
+            scheme_data = scheme_res.data[0]
+            
+        # 2. If not found in Supabase by ID, search local Excel schemes
+        if not scheme_data:
+            local = get_local_schemes()
+            req_id_str = str(req.scheme_id).strip().lower()
+            for s in local:
+                if str(s.get("id", "")).strip().lower() == req_id_str:
+                    scheme_data = s
+                    break
+                s_name = str(s.get("scheme_name", "")).strip().lower()
+                if req_id_str == s_name or req_id_str in s_name or s_name in req_id_str:
+                    scheme_data = s
+                    break
+
+        # 3. If still not found, try search by scheme_name in Supabase
+        if not scheme_data:
+            res_name = safe_query(lambda sb: sb.table("schemes_clean").select("*").ilike("scheme_name", f"%{req.scheme_id}%").limit(1).execute())
+            if res_name and res_name.data:
+                scheme_data = res_name.data[0]
+
+        if scheme_data:
+            context = build_scheme_knowledge_context(scheme_data)
+        else:
+            context = f"The user is asking about scheme: '{req.scheme_id}'. Answer based on government policy and startup scheme knowledge.\n" + build_general_knowledge_context()
+
         hist_list = [{"role": msg.role, "content": msg.content} for msg in req.history]
         response = chat_with_agent(req.message, hist_list, context)
         return {"response": response}
-    except HTTPException:
-        raise
-    except Exception:
-        return {"response": "I'm having trouble connecting right now. Please try again in a moment."}
+    except Exception as e:
+        traceback.print_exc()
+        return {"response": "I'm having trouble retrieving details for this scheme right now. Please try asking again or click 'Clear Context'."}
 
 
 @app.get("/pipeline/status")

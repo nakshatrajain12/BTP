@@ -23,8 +23,8 @@ def _load_api_keys():
         k = os.environ.get(f"GEMINI_API_KEY_{i}")
         if k:
             keys.append(k)
-    if not keys:
-        raise ValueError("No GEMINI_API_KEY found in environment!")
+    if not keys and not os.environ.get("GROQ_API_KEY"):
+        raise ValueError("Neither GEMINI_API_KEY nor GROQ_API_KEY found in environment!")
     return keys
 
 API_KEYS = _load_api_keys()
@@ -33,12 +33,16 @@ _current_key_index = 0
 def _get_client():
     """Get a genai Client using the current key."""
     global _current_key_index
+    if not API_KEYS:
+        raise ValueError("No Gemini API keys available.")
     key = API_KEYS[_current_key_index % len(API_KEYS)]
     return genai.Client(api_key=key)
 
 def _rotate_key():
     """Switch to the next available API key."""
     global _current_key_index
+    if not API_KEYS:
+        return
     old_idx = _current_key_index % len(API_KEYS)
     _current_key_index += 1
     new_idx = _current_key_index % len(API_KEYS)
@@ -49,18 +53,40 @@ def _is_quota_error(e: Exception) -> bool:
     err = str(e).lower()
     return "429" in err or "quota" in err or "rate" in err or "resource_exhausted" in err
 
-def _call_gemini(prompt: str, json_mode: bool = False, max_retries: int = 3):
-    """Core Gemini call with multi-key failover.
+def _call_groq(prompt: str, json_mode: bool = False) -> str:
+    """Groq API fallback using llama-3.3-70b-versatile."""
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if not groq_key:
+        raise ValueError("GROQ_API_KEY is not configured in environment.")
     
-    Strategy:
-    1. Try current key up to max_retries times
-    2. On quota error → rotate key and retry immediately
-    3. On other errors → simple backoff retry
-    """
+    import httpx
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {groq_key.strip()}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+        
+    with httpx.Client(timeout=35.0) as client:
+        res = client.post(url, headers=headers, json=payload)
+        res.raise_for_status()
+        data = res.json()
+        return data["choices"][0]["message"]["content"]
+
+def _call_gemini(prompt: str, json_mode: bool = False, max_retries: int = 3):
+    """Core Gemini call with multi-key failover."""
+    if not API_KEYS:
+        raise ValueError("No Gemini keys available.")
     keys_tried = 0
     total_keys = len(API_KEYS)
     
-    for attempt in range(max_retries * total_keys):  # Extended attempts across all keys
+    for attempt in range(max_retries * total_keys):
         try:
             client = _get_client()
             config = {'response_mime_type': 'application/json'} if json_mode else {}
@@ -76,20 +102,33 @@ def _call_gemini(prompt: str, json_mode: bool = False, max_retries: int = 3):
                 keys_tried += 1
                 if keys_tried < total_keys:
                     _rotate_key()
-                    continue  # Retry immediately with new key
-                else:
-                    # All keys exhausted, wait and reset
-                    print(f"[GEMINI] All {total_keys} keys exhausted. Waiting 30s...")
-                    time.sleep(30)
-                    keys_tried = 0
-                    _rotate_key()
                     continue
+                else:
+                    print(f"[GEMINI] All {total_keys} keys exhausted.")
+                    raise e
             else:
-                # Non-quota error: simple backoff
                 if attempt < max_retries * total_keys - 1:
-                    time.sleep(5 * (attempt + 1))
+                    time.sleep(2 * (attempt + 1))
                 else:
                     raise e
+
+def _call_llm(prompt: str, json_mode: bool = False) -> str:
+    """Unified LLM router: Tries Gemini first, then automatically fails over to Groq."""
+    if API_KEYS:
+        try:
+            return _call_gemini(prompt, json_mode=json_mode)
+        except Exception as gemini_err:
+            print(f"[LLM] Gemini request failed ({gemini_err}). Triggering Groq failover...")
+            
+    if os.environ.get("GROQ_API_KEY"):
+        try:
+            print("[LLM] Executing query via Groq (llama-3.3-70b-versatile)...")
+            return _call_groq(prompt, json_mode=json_mode)
+        except Exception as groq_err:
+            print(f"[LLM] Groq failover error: {groq_err}")
+            raise groq_err
+
+    raise RuntimeError("No LLM providers (Gemini or Groq) available or able to complete request.")
 
 
 # ═══════════════════════════════════════════════════
@@ -99,7 +138,7 @@ def _call_gemini(prompt: str, json_mode: bool = False, max_retries: int = 3):
 def summarize_scheme(scheme_data: dict) -> str:
     prompt = f"Summarise this government startup scheme in 3 sentences in plain English. Focus on: who can apply, how much they can get, and what the main benefit is.\n\nScheme Data: {scheme_data}"
     try:
-        return _call_gemini(prompt)
+        return _call_llm(prompt)
     except Exception as e:
         print(f"Failed summarize_scheme: {e}")
         return "Pending summary due to high AI load."
@@ -171,7 +210,7 @@ Return a VALID JSON array of objects with these fields:
 
 Ensure the output is ONLY the JSON array, no markdown formatting."""
     
-    return _call_gemini(prompt, json_mode=True)
+    return _call_llm(prompt, json_mode=True)
 
 def evaluate_single_scheme(user_name: str, user_sector: str, user_stage: str, user_location: str, scheme_data: str) -> str:
     prompt = f"""You are an expert Indian government policy analyst performing a detailed eligibility assessment.
@@ -239,13 +278,13 @@ Return a VALID JSON array with exactly ONE object containing:
 - application_url: (URL to apply)
 
 Ensure the output is ONLY the JSON array."""
-    return _call_gemini(prompt, json_mode=True)
+    return _call_llm(prompt, json_mode=True)
 
 def chat_with_agent(message: str, history: list, context_data: str) -> str:
     messages_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
     prompt = f"You are GOV-BOT, an AI expert on Indian government startup schemes and policies.\nYou have been loaded with knowledge about these schemes.\nHelp the user understand eligibility, application process, required documents, funding amounts, deadlines, and any other details.\nBe specific, accurate, and helpful. If you don't know something, say so.\nContext Data:\n{context_data}\n\nChat History:\n{messages_str}\n\nUser: {message}\nAI:"
     
     try:
-        return _call_gemini(prompt)
+        return _call_llm(prompt)
     except Exception as e:
         return "Sorry, I am facing some issues connecting to my brain right now."

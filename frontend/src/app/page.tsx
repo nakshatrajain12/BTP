@@ -1340,7 +1340,7 @@ function LocalAgentChatbot({ profile }: { profile: any }) {
       const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
       const endpoint = schemeContext ? "/chat/scheme" : "/chat";
       const body = schemeContext 
-        ? { scheme_id: schemeContext.id, message: currentInput, history: currentHistory }
+        ? { scheme_id: schemeContext.id || schemeContext.scheme_name, message: currentInput, history: currentHistory }
         : { message: currentInput, history: currentHistory };
 
       const res = await fetch(`${API}${endpoint}`, {
@@ -1349,7 +1349,11 @@ function LocalAgentChatbot({ profile }: { profile: any }) {
         body: JSON.stringify(body)
       });
       const data = await res.json();
-      setMessages(prev => [...prev, { role: "assistant", content: data.response || "Something went wrong." }]);
+      if (!res.ok) {
+        setMessages(prev => [...prev, { role: "assistant", content: data.detail || data.response || "Server error while processing your request. Please try again." }]);
+      } else {
+        setMessages(prev => [...prev, { role: "assistant", content: data.response || "I didn't receive a response. Please try again." }]);
+      }
     } catch(err) {
       setMessages(prev => [...prev, { role: "assistant", content: "Failed to reach the policy intelligence engine." }]);
     } finally {
