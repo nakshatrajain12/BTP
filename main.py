@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from pipeline.bronze_runner import run_all_scrapers
 from pipeline.silver import run_silver_layer
 from pipeline.nlp_enrichment import run_nlp_enrichment
-from pipeline.llm_service import recommend_schemes, chat_with_agent
+from pipeline.llm_service import recommend_schemes, chat_with_agent, test_llm_connection
 from pipeline.ingest_central_xlsx import ingest_xlsx
 from pipeline.knowledge_builder import build_general_knowledge_context, build_scheme_knowledge_context
 from dotenv import load_dotenv
@@ -31,10 +31,10 @@ load_dotenv()
 # recreates the client on failure and retries.
 # ═══════════════════════════════════════════════════
 
-_supabase_url = os.environ.get("SUPABASE_URL")
-_supabase_key = os.environ.get("SUPABASE_KEY")
+_supabase_url = os.environ.get("SUPABASE_URL") or "https://akmobppxfzdsspvztgmu.supabase.co"
+_supabase_key = os.environ.get("SUPABASE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFrbW9icHB4Znpkc3Nwdnp0Z211Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTg1MzI0MSwiZXhwIjoyMDkxNDI5MjQxfQ.NCk9pusp48Fbp6WS5-dUncCq8CuuavNAIv2VQ2Nqe2s"
 try:
-    _supabase_client = create_client(_supabase_url, _supabase_key) if (_supabase_url and _supabase_key) else None
+    _supabase_client = create_client(_supabase_url, _supabase_key)
 except Exception as e:
     print(f"[WARN] Could not initialize Supabase client: {e}")
     _supabase_client = None
@@ -216,6 +216,11 @@ class ApplicationReq(BaseModel):
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "Startup Policy Intelligence API is running."}
+
+@app.get("/llm-status")
+def get_llm_status():
+    """Diagnostic endpoint to verify Gemini and Groq API keys and connectivity."""
+    return test_llm_connection()
 
 @app.post("/pipeline/run-scrapers")
 async def trigger_scraping(background_tasks: BackgroundTasks):

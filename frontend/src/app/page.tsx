@@ -335,22 +335,22 @@ function useAPI<T>(url: string, opts?: RequestInit) {
           .then(async (r) => {
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const json = await r.json();
-            // If summary returns 0 or schemes returns empty array, seamlessly recover from Supabase directly!
-            if (url === "/analytics/summary" && (!json || json.total_schemes === 0)) {
+            // If summary returns 0 or schemes returns partial array, seamlessly recover full 97 schemes from Supabase directly!
+            if (url === "/analytics/summary" && (!json || json.total_schemes < 50)) {
               const fallback = await fetchSupabaseFallback(url, opts);
-              if (fallback) return fallback;
+              if (fallback && fallback.total_schemes >= (json?.total_schemes || 0)) return fallback;
             }
-            if (url.startsWith("/schemes") && (!json?.schemes || json.schemes.length === 0)) {
+            if (url.startsWith("/schemes") && (!json?.schemes || json.schemes.length < 50)) {
               const fallback = await fetchSupabaseFallback(url, opts);
-              if (fallback) return fallback;
+              if (fallback && fallback.schemes && fallback.schemes.length >= (json?.schemes?.length || 0)) return fallback;
             }
             if (url === "/opportunity-radar" && (!json?.open_now || json.open_now.length === 0)) {
               const fallback = await fetchSupabaseFallback(url, opts);
               if (fallback) return fallback;
             }
-            if (url === "/analytics/detailed" && (!json?.summary || json.summary.total_schemes === 0)) {
+            if (url === "/analytics/detailed" && (!json?.summary || json.summary.total_schemes < 50)) {
               const fallback = await fetchSupabaseFallback(url, opts);
-              if (fallback) return fallback;
+              if (fallback && fallback.summary?.total_schemes >= (json?.summary?.total_schemes || 0)) return fallback;
             }
             if (url.startsWith("/alerts") && (!json?.alerts || json.alerts.length === 0)) {
               const fallback = await fetchSupabaseFallback(url, opts);

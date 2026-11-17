@@ -7,9 +7,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_url = os.environ.get("SUPABASE_URL")
-_key = os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(_url, _key) if (_url and _key) else None
+_url = os.environ.get("SUPABASE_URL") or "https://akmobppxfzdsspvztgmu.supabase.co"
+_key = os.environ.get("SUPABASE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFrbW9icHB4Znpkc3Nwdnp0Z211Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTg1MzI0MSwiZXhwIjoyMDkxNDI5MjQxfQ.NCk9pusp48Fbp6WS5-dUncCq8CuuavNAIv2VQ2Nqe2s"
+try:
+    supabase: Client = create_client(_url, _key)
+except Exception as e:
+    supabase = None
 
 def compute_hash(data: dict) -> str:
     stringified = json.dumps(data, sort_keys=True)
