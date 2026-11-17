@@ -10,10 +10,16 @@ def build_general_knowledge_context(schemes: list | None = None) -> str:
                 schemes = schemes_res.data or []
             except Exception:
                 schemes = []
+            if not schemes:
+                try:
+                    from main import get_local_schemes
+                    schemes = get_local_schemes()
+                except Exception:
+                    schemes = []
         
         total_schemes = len(schemes)
         if total_schemes == 0:
-            return "No schemes currently available in the database."
+            return "Indian Government Startup Policy Knowledge Base: Covers core central initiatives including Startup India Seed Fund Scheme (SISFS), MeitY TIDE 2.0, Fund of Funds for Startups (FFS), Credit Guarantee Scheme (CGSS), Atal Innovation Mission (AIM), and MUDRA."
 
         ministry_counts = {}
         stage_counts = {"Idea": 0, "Prototype": 0, "Early Revenue": 0, "Scale-up": 0}
