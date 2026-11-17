@@ -8,4 +8,5 @@ httpx
 beautifulsoup4
 google-genai
 openpyxl
+pandas
 apscheduler

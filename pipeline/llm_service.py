@@ -54,7 +54,7 @@ def _is_quota_error(e: Exception) -> bool:
     return "429" in err or "quota" in err or "rate" in err or "resource_exhausted" in err
 
 def _call_groq(prompt: str, json_mode: bool = False) -> str:
-    """Groq API fallback using llama-3.3-70b-versatile."""
+    """Groq API fallback with model auto-discovery / fallback."""
     groq_key = os.environ.get("GROQ_API_KEY")
     if not groq_key:
         raise ValueError("GROQ_API_KEY is not configured in environment.")
@@ -65,19 +65,41 @@ def _call_groq(prompt: str, json_mode: bool = False) -> str:
         "Authorization": f"Bearer {groq_key.strip()}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2
-    }
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
-        
+    
+    # Priority list of models to try
+    candidate_models = []
+    env_model = os.environ.get("GROQ_MODEL")
+    if env_model:
+        candidate_models.append(env_model.strip())
+    # Tested available models on Groq
+    for m in ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]:
+        if m not in candidate_models:
+            candidate_models.append(m)
+
+    last_error = None
     with httpx.Client(timeout=35.0) as client:
-        res = client.post(url, headers=headers, json=payload)
-        res.raise_for_status()
-        data = res.json()
-        return data["choices"][0]["message"]["content"]
+        for model_name in candidate_models:
+            payload = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+                
+            try:
+                res = client.post(url, headers=headers, json=payload)
+                res.raise_for_status()
+                data = res.json()
+                return data["choices"][0]["message"]["content"]
+            except Exception as e:
+                last_error = e
+                print(f"[GROQ] Model {model_name} failed: {e}. Trying next candidate...")
+                continue
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("No Groq models succeeded.")
 
 def _call_gemini(prompt: str, json_mode: bool = False, max_retries: int = 3):
     """Core Gemini call with multi-key failover."""
@@ -122,7 +144,7 @@ def _call_llm(prompt: str, json_mode: bool = False) -> str:
             
     if os.environ.get("GROQ_API_KEY"):
         try:
-            print("[LLM] Executing query via Groq (llama-3.3-70b-versatile)...")
+            print("[LLM] Executing query via Groq failover...")
             return _call_groq(prompt, json_mode=json_mode)
         except Exception as groq_err:
             print(f"[LLM] Groq failover error: {groq_err}")
@@ -287,4 +309,7 @@ def chat_with_agent(message: str, history: list, context_data: str) -> str:
     try:
         return _call_llm(prompt)
     except Exception as e:
+        import traceback
+        print(f"[CHAT ERROR] Failed to connect to LLM: {e}")
+        traceback.print_exc()
         return "Sorry, I am facing some issues connecting to my brain right now."

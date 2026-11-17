@@ -87,14 +87,26 @@ export default function SignupPage({
     }
   };
 
-  const inputStyle = {
+  const inputStyle: React.CSSProperties = {
     borderRadius: '12px', padding: '12px 16px',
     background: 'rgba(15,23,42,0.5)', border: '1px solid rgba(255,255,255,0.05)',
-    outline: 'none', color: '#fff', fontSize: '14px', transition: 'border-color 0.2s'
+    outline: 'none', color: '#fff', fontSize: '14px', transition: 'border-color 0.2s',
+    colorScheme: 'dark',
   };
 
-  const selectStyle = {
-    ...inputStyle, cursor: 'pointer' as const
+  const selectStyle: React.CSSProperties = {
+    ...inputStyle, cursor: 'pointer',
+    colorScheme: 'dark',
+  };
+
+  const optionStyle: React.CSSProperties = {
+    backgroundColor: '#0f172a',
+    color: '#ffffff',
+  };
+
+  const optionDisabledStyle: React.CSSProperties = {
+    backgroundColor: '#0f172a',
+    color: '#94a3b8',
   };
 
   return (
@@ -171,41 +183,41 @@ export default function SignupPage({
             <div className="flex flex-col gap-1.5">
               <label style={{ fontSize: '11px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Sector</label>
               <select value={sector} onChange={(e) => setSector(e.target.value)} required style={selectStyle}>
-                <option value="" disabled>Select your sector</option>
-                <option value="Deeptech">Deeptech</option>
-                <option value="Fintech">Fintech</option>
-                <option value="Healthtech">Healthtech</option>
-                <option value="Edtech">Edtech</option>
-                <option value="Agritech">Agritech</option>
-                <option value="SaaS">SaaS</option>
-                <option value="Defense">Defense</option>
-                <option value="Hardware">Hardware</option>
-                <option value="Other">Other</option>
+                <option value="" disabled style={optionDisabledStyle}>Select your sector</option>
+                <option value="Deeptech" style={optionStyle}>Deeptech</option>
+                <option value="Fintech" style={optionStyle}>Fintech</option>
+                <option value="Healthtech" style={optionStyle}>Healthtech</option>
+                <option value="Edtech" style={optionStyle}>Edtech</option>
+                <option value="Agritech" style={optionStyle}>Agritech</option>
+                <option value="SaaS" style={optionStyle}>SaaS</option>
+                <option value="Defense" style={optionStyle}>Defense</option>
+                <option value="Hardware" style={optionStyle}>Hardware</option>
+                <option value="Other" style={optionStyle}>Other</option>
               </select>
             </div>
 
             <div className="flex flex-col gap-1.5">
               <label style={{ fontSize: '11px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Stage</label>
               <select value={stage} onChange={(e) => setStage(e.target.value)} required style={selectStyle}>
-                <option value="" disabled>Select startup stage</option>
-                <option value="idea">Idea</option>
-                <option value="prototype">Prototype</option>
-                <option value="early_revenue">Early Revenue</option>
-                <option value="scale_up">Scale Up</option>
+                <option value="" disabled style={optionDisabledStyle}>Select startup stage</option>
+                <option value="idea" style={optionStyle}>Idea</option>
+                <option value="prototype" style={optionStyle}>Prototype</option>
+                <option value="early_revenue" style={optionStyle}>Early Revenue</option>
+                <option value="scale_up" style={optionStyle}>Scale Up</option>
               </select>
             </div>
 
             <div className="flex flex-col gap-1.5">
               <label style={{ fontSize: '11px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Location / State</label>
               <select value={location} onChange={(e) => setLocation(e.target.value)} required style={selectStyle}>
-                <option value="" disabled>Select location</option>
-                <option value="Pan-India">Pan-India</option>
-                <option value="Karnataka">Karnataka</option>
-                <option value="Kerala">Kerala</option>
-                <option value="Maharashtra">Maharashtra</option>
-                <option value="Odisha">Odisha</option>
-                <option value="Rajasthan">Rajasthan</option>
-                <option value="Delhi">Delhi</option>
+                <option value="" disabled style={optionDisabledStyle}>Select location</option>
+                <option value="Pan-India" style={optionStyle}>Pan-India</option>
+                <option value="Karnataka" style={optionStyle}>Karnataka</option>
+                <option value="Kerala" style={optionStyle}>Kerala</option>
+                <option value="Maharashtra" style={optionStyle}>Maharashtra</option>
+                <option value="Odisha" style={optionStyle}>Odisha</option>
+                <option value="Rajasthan" style={optionStyle}>Rajasthan</option>
+                <option value="Delhi" style={optionStyle}>Delhi</option>
               </select>
             </div>
 

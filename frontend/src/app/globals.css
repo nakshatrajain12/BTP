@@ -55,11 +55,38 @@
 /* ═══════════════════════════════════════════ */
 /* BASE RESETS & DEFAULTS                     */
 /* ═══════════════════════════════════════════ */
+:root {
+  color-scheme: dark;
+}
+
 body {
   background-color: #0a0d17;
   color: #cbd5e1;
   margin: 0;
   padding: 0;
+}
+
+/* Ensure form controls and select options have high-contrast text and background */
+select option {
+  background-color: #0f172a;
+  color: #f8fafc;
+}
+
+select.bg-white option,
+.bg-white select option {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
+/* Autofill styling to prevent browser white overlay with white text */
+input:-webkit-autofill,
+input:-webkit-autofill:hover, 
+input:-webkit-autofill:focus, 
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 30px #0f172a inset !important;
+  -webkit-text-fill-color: #ffffff !important;
+  caret-color: #ffffff !important;
+  transition: background-color 5000s ease-in-out 0s;
 }
 
 /* Global scrollbar styling */

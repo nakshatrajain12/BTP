@@ -106,11 +106,11 @@ export default function CommunityPage() {
     <div className="max-w-6xl mx-auto px-4 py-8">
       {/* Header */}
       <div className="mb-8">
-        <a href="/" className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-800 mb-3 transition-colors">
+        <a href="/" className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-400 hover:text-blue-300 mb-3 transition-colors">
           &larr; Back to Dashboard
         </a>
-        <h1 className="text-3xl font-bold tracking-tight text-slate-900">Founder Community & Mentors</h1>
-        <p className="text-slate-500 mt-1">Discuss scheme approvals, grant application advice, and connect with verified policy advisors.</p>
+        <h1 className="text-3xl font-bold tracking-tight text-white">Founder Community & Mentors</h1>
+        <p className="text-slate-400 mt-1">Discuss scheme approvals, grant application advice, and connect with verified policy advisors.</p>
       </div>
 
       {/* Tabs */}
@@ -181,13 +181,14 @@ export default function CommunityPage() {
                 <select
                   value={newCategory}
                   onChange={(e) => setNewCategory(e.target.value)}
-                  className="w-full text-sm border border-slate-200 rounded-lg p-2.5 bg-white focus:outline-blue-500"
+                  className="w-full text-sm border border-slate-200 rounded-lg p-2.5 bg-white text-slate-900 focus:outline-blue-500 cursor-pointer"
+                  style={{ backgroundColor: '#ffffff', color: '#0f172a', colorScheme: 'light' }}
                 >
-                  <option value="Grants">Grants & Subsidies</option>
-                  <option value="DPIIT Recognition">DPIIT Recognition</option>
-                  <option value="Compliance">Compliance & Tax Exemption</option>
-                  <option value="Investor Pitch">Investor Pitch</option>
-                  <option value="General">General Discussion</option>
+                  <option value="Grants" style={{ backgroundColor: '#ffffff', color: '#0f172a' }}>Grants & Subsidies</option>
+                  <option value="DPIIT Recognition" style={{ backgroundColor: '#ffffff', color: '#0f172a' }}>DPIIT Recognition</option>
+                  <option value="Compliance" style={{ backgroundColor: '#ffffff', color: '#0f172a' }}>Compliance & Tax Exemption</option>
+                  <option value="Investor Pitch" style={{ backgroundColor: '#ffffff', color: '#0f172a' }}>Investor Pitch</option>
+                  <option value="General" style={{ backgroundColor: '#ffffff', color: '#0f172a' }}>General Discussion</option>
                 </select>
               </div>
 
@@ -198,7 +199,8 @@ export default function CommunityPage() {
                   placeholder="e.g. Has anyone received the SISFS seed grant approval in Tamil Nadu?"
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
-                  className="w-full text-sm border border-slate-200 rounded-lg p-2.5 focus:outline-blue-500"
+                  className="w-full text-sm border border-slate-200 rounded-lg p-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-blue-500"
+                  style={{ backgroundColor: '#ffffff', color: '#0f172a', colorScheme: 'light' }}
                 />
               </div>
 
@@ -209,7 +211,8 @@ export default function CommunityPage() {
                   rows={4}
                   value={newContent}
                   onChange={(e) => setNewContent(e.target.value)}
-                  className="w-full text-sm border border-slate-200 rounded-lg p-2.5 focus:outline-blue-500"
+                  className="w-full text-sm border border-slate-200 rounded-lg p-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-blue-500"
+                  style={{ backgroundColor: '#ffffff', color: '#0f172a', colorScheme: 'light' }}
                 />
               </div>
 

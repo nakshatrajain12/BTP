@@ -7,10 +7,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-supabase: Client = create_client(
-    os.environ.get("SUPABASE_URL"),
-    os.environ.get("SUPABASE_KEY")
-)
+_url = os.environ.get("SUPABASE_URL")
+_key = os.environ.get("SUPABASE_KEY")
+supabase: Client = create_client(_url, _key) if (_url and _key) else None
 
 def compute_hash(data: dict) -> str:
     stringified = json.dumps(data, sort_keys=True)
