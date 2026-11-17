@@ -8,7 +8,11 @@ def render():
         res = requests.get("http://localhost:8000/analytics/layer").json()
         if "stage_coverage" in res and res["stage_coverage"]:
             df = pd.DataFrame(res["stage_coverage"])
-            st.bar_chart(df.set_index("stage")["scheme_count"])
+            chart_df = df.groupby("stage")["scheme_count"].sum().sort_values(ascending=False).head(15)
+            st.subheader("Scheme Distribution by Startup Stage")
+            st.bar_chart(chart_df)
+            with st.expander("View Detailed Table"):
+                st.dataframe(df)
         elif "fallback_aggregated" in res:
             df = pd.DataFrame(res["data"])
             if not df.empty and 'startup_stage' in df.columns:

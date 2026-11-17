@@ -9,7 +9,9 @@ from pipeline.stage_mapper import normalize_stages
 from pipeline.category_mapper import normalize_category
 
 def ingest_xlsx():
-    file_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Central_Govt_Startup_Schemes_Database (1).xlsx")
+    file_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Central_Govt_Startup_Schemes_Database.xlsx")
+    if not os.path.exists(file_path):
+        file_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Central_Govt_Startup_Schemes_Database (1).xlsx")
     if not os.path.exists(file_path):
         print(f"File not found: {file_path}")
         return

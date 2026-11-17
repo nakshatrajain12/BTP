@@ -12,7 +12,11 @@ def render():
             data = res["funding_by_ministry"]
             if data:
                 df = pd.DataFrame(data)
-                st.bar_chart(df.set_index("ministry")["total_budget"])
+                chart_df = df.groupby("ministry")["total_budget"].sum().sort_values(ascending=False).head(15)
+                st.subheader("Top Ministries by Total Allocated Budget (INR)")
+                st.bar_chart(chart_df)
+                with st.expander("View Detailed Table"):
+                    st.dataframe(df)
             else:
                 st.info("No data yet in Gold Layer")
         elif "fallback_aggregated" in res:

@@ -1,6 +1,9 @@
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 import sys
 import os
 import json
@@ -42,29 +45,143 @@ def safe_query(query_fn, fallback=None):
     Usage: safe_query(lambda sb: sb.table("x").select("*").execute())
     """
     global _supabase_client
-    for attempt in range(3):
+    if _supabase_client is None:
+        return fallback if fallback is not None else type('EmptyQuery', (object,), {'data': []})()
+        
+    for attempt in range(2):
         try:
             return query_fn(_supabase_client)
         except Exception as e:
             err_str = str(e).lower()
-            if "disconnect" in err_str or "remoteprotocol" in err_str or "connection" in err_str:
-                print(f"[SUPABASE] Connection error (attempt {attempt + 1}/3), recreating client...")
-                _supabase_client = create_client(_supabase_url, _supabase_key)
-                if attempt == 2:
-                    print(f"[SUPABASE] All retries exhausted: {e}")
+            if "disconnect" in err_str or "remoteprotocol" in err_str or "connection" in err_str or "getaddrinfo" in err_str or "11001" in err_str:
+                if attempt == 1:
                     if fallback is not None:
                         return fallback
-                    raise
+                    return type('EmptyQuery', (object,), {'data': []})()
             else:
-                # Non-connection error, don't retry
                 if fallback is not None:
-                    print(f"[SUPABASE] Query error: {e}")
                     return fallback
-                raise
+                return type('EmptyQuery', (object,), {'data': []})()
+    return fallback if fallback is not None else type('EmptyQuery', (object,), {'data': []})()
+
+# ═══════════════════════════════════════════════════
+# LOCAL SCHEMES & GOLD LAYER DATA FALLBACK
+# ═══════════════════════════════════════════════════
+
+_local_schemes_cache = None
+
+def get_local_schemes():
+    global _local_schemes_cache
+    if _local_schemes_cache is not None:
+        return _local_schemes_cache
+    
+    excel_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Central_Govt_Startup_Schemes_Database.xlsx")
+    if not os.path.exists(excel_path):
+        excel_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Central_Govt_Startup_Schemes_Database (1).xlsx")
+    
+    if os.path.exists(excel_path):
+        try:
+            from pipeline.excel_importer import ExcelImporter
+            imp = ExcelImporter(excel_path)
+            if imp.parse_excel():
+                schemes = imp.extract_schemes()
+                for idx, s in enumerate(schemes):
+                    s["id"] = s.get("id") or f"excel-{idx+1}"
+                _local_schemes_cache = schemes
+                print(f"[LOCAL_DATA] Loaded {len(_local_schemes_cache)} schemes from {os.path.basename(excel_path)}")
+                return _local_schemes_cache
+        except Exception as e:
+            print(f"[LOCAL_DATA] Error parsing Excel: {e}")
+            
+    _local_schemes_cache = []
+    return _local_schemes_cache
+
+def get_local_gold_analytics():
+    schemes = get_local_schemes()
+    if not schemes:
+        return {"funding_by_ministry": [], "sector_distribution": [], "stage_coverage": []}
+    
+    import pandas as pd
+    df = pd.DataFrame(schemes)
+    
+    # 1. funding_by_ministry
+    fbm = []
+    for (minis, ft), group in df.groupby(['ministry', 'funding_type']):
+        tot = group['total_budget_allocated'].fillna(0).sum()
+        if tot == 0:
+            tot = group['max_funding_amount'].fillna(0).sum()
+        fbm.append({
+            'ministry': str(minis),
+            'funding_type': str(ft) if ft else 'Grant',
+            'total_budget': float(tot)
+        })
+    fbm.sort(key=lambda x: x['total_budget'], reverse=True)
+    
+    # 2. sector_distribution
+    sec_map = {}
+    for s in schemes:
+        secs = s.get('sector_eligibility') or ['General']
+        amt = float(s.get('max_funding_amount') or 0)
+        for sec in secs:
+            sec_clean = str(sec).strip().title()
+            if sec_clean not in sec_map:
+                sec_map[sec_clean] = {'scheme_count': 0, 'total_funding': 0.0}
+            sec_map[sec_clean]['scheme_count'] += 1
+            sec_map[sec_clean]['total_funding'] += amt
+    s_dist = [
+        {'sector': k, 'scheme_count': v['scheme_count'], 'total_funding': v['total_funding']}
+        for k, v in sec_map.items()
+    ]
+    s_dist.sort(key=lambda x: x['scheme_count'], reverse=True)
+    
+    # 3. stage_coverage
+    stg_map = {}
+    for s in schemes:
+        stgs = s.get('startup_stage') or ['All Stages']
+        for stg in stgs:
+            stg_clean = str(stg).strip().title()
+            stg_map[stg_clean] = stg_map.get(stg_clean, 0) + 1
+    s_cov = [
+        {'stage': k, 'scheme_count': v}
+        for k, v in stg_map.items()
+    ]
+    s_cov.sort(key=lambda x: x['scheme_count'], reverse=True)
+    
+    return {
+        "funding_by_ministry": fbm,
+        "sector_distribution": s_dist,
+        "stage_coverage": s_cov
+    }
 
 # ═══════════════════════════════════════════════════
 
-app = FastAPI(title="Startup Policy Intelligence API")
+scheduler = AsyncIOScheduler()
+
+async def scheduled_pipeline_run():
+    print("[CRON] Initiating automated nightly pipeline...")
+    try:
+        await run_all_scrapers()
+        run_silver_layer()
+        run_nlp_enrichment()
+        print("[CRON] Nightly pipeline completed successfully.")
+    except Exception as e:
+        print(f"[CRON ERROR] Scheduled execution failed: {e}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Runs everyday at 02:00 AM server time
+    scheduler.add_job(
+        scheduled_pipeline_run,
+        CronTrigger(hour=2, minute=0),
+        id="nightly_pipeline",
+        replace_existing=True
+    )
+    scheduler.start()
+    print("[SCHEDULER] Daily cron job started (02:00 AM).")
+    yield
+    scheduler.shutdown()
+
+app = FastAPI(title="Startup Policy Intelligence API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -385,6 +502,22 @@ async def list_schemes(
         res = safe_query(do_query)
         schemes = res.data or []
         
+        if not schemes:
+            local = get_local_schemes()
+            filtered = local
+            if sector:
+                filtered = [s for s in filtered if sector.lower() in [sec.lower() for sec in (s.get('sector_eligibility') or [])]]
+            if stage:
+                filtered = [s for s in filtered if stage.lower() in [stg.lower() for stg in (s.get('startup_stage') or [])]]
+            if state:
+                filtered = [s for s in filtered if state.lower() in (s.get('geographic_restriction') or '').lower()]
+            if ministry:
+                filtered = [s for s in filtered if ministry.lower() in (s.get('ministry') or '').lower()]
+            if category:
+                filtered = [s for s in filtered if category.lower() in (s.get('category') or '').lower()]
+            offset = (page - 1) * limit
+            schemes = filtered[offset:offset + limit]
+
         # Annotate with recent updates (best effort)
         try:
             from datetime import datetime, timedelta
@@ -410,9 +543,12 @@ async def list_schemes(
 async def get_scheme(scheme_id: str):
     try:
         res = safe_query(lambda sb: sb.table("schemes_clean").select("*").eq("id", scheme_id).execute())
-        if not res.data:
-            raise HTTPException(status_code=404, detail="Scheme not found")
-        return res.data[0]
+        if res.data:
+            return res.data[0]
+        for s in get_local_schemes():
+            if str(s.get("id")) == str(scheme_id) or str(s.get("scheme_name")) == str(scheme_id):
+                return s
+        raise HTTPException(status_code=404, detail="Scheme not found")
     except HTTPException:
         raise
     except Exception:
@@ -501,6 +637,8 @@ async def get_summary():
             lambda sb: sb.table("schemes_clean").select("id, max_funding_amount, total_budget_allocated, ministry").execute()
         )
         data = res.data or []
+        if not data:
+            data = get_local_schemes()
         schemes_with_budget = [s for s in data if s.get("total_budget_allocated") and float(s.get("total_budget_allocated", 0)) > 0]
         schemes_with_funding = [s for s in data if s.get("max_funding_amount") and float(s.get("max_funding_amount", 0)) > 0]
         total_budget = sum(float(s.get("total_budget_allocated", 0)) for s in schemes_with_budget)
@@ -552,10 +690,15 @@ def standardize_ministry_name(name: str) -> str:
 async def get_funding_by_ministry():
     try:
         res = safe_query(lambda sb: sb.table("schemes_clean").select("ministry, total_budget_allocated").execute())
+        data = res.data or []
+        if not data:
+            data = get_local_schemes()
         ministries = {}
-        for s in (res.data or []):
+        for s in data:
             m = standardize_ministry_name(s.get("ministry") or "Unknown")
             b = float(s.get("total_budget_allocated") or 0)
+            if b == 0:
+                b = float(s.get("max_funding_amount") or 0)
             if m not in ministries: 
                 ministries[m] = 0
             ministries[m] += b
@@ -567,7 +710,8 @@ async def get_funding_by_ministry():
         result.sort(key=lambda x: x["total_budget"], reverse=True)
         return result
     except Exception:
-        return []
+        gold = get_local_gold_analytics()
+        return [{"ministry": r["ministry"], "total_budget": r["total_budget"]} for r in gold["funding_by_ministry"]]
 
 
 @app.get("/analytics/sector-distribution")
@@ -585,15 +729,21 @@ async def get_sector_distribution():
     # Fallback to manual aggregation
     try:
         res = safe_query(lambda sb: sb.table("schemes_clean").select("sector_eligibility").execute())
+        data = res.data or []
+        if not data:
+            data = get_local_schemes()
         sectors = {}
-        for s in (res.data or []):
+        for s in data:
             if s.get("sector_eligibility"):
                 for sec in s["sector_eligibility"]:
-                    if sec not in sectors: sectors[sec] = 0
-                    sectors[sec] += 1
-        return [{"sector": k, "scheme_count": v} for k, v in sectors.items()]
+                    sec_clean = str(sec).strip().title()
+                    if sec_clean not in sectors: sectors[sec_clean] = 0
+                    sectors[sec_clean] += 1
+        if sectors:
+            return [{"sector": k, "scheme_count": v} for k, v in sectors.items()]
+        return get_local_gold_analytics()["sector_distribution"]
     except Exception:
-        return []
+        return get_local_gold_analytics()["sector_distribution"]
 
 
 @app.get("/analytics/stage-coverage")
@@ -611,15 +761,21 @@ async def get_stage_coverage():
     # Fallback
     try:
         res = safe_query(lambda sb: sb.table("schemes_clean").select("startup_stage").execute())
+        data = res.data or []
+        if not data:
+            data = get_local_schemes()
         stages = {}
-        for s in (res.data or []):
+        for s in data:
             if s.get("startup_stage"):
                 for st in s["startup_stage"]:
-                    if st not in stages: stages[st] = 0
-                    stages[st] += 1
-        return [{"stage": k, "scheme_count": v} for k, v in stages.items()]
+                    st_clean = str(st).strip().title()
+                    if st_clean not in stages: stages[st_clean] = 0
+                    stages[st_clean] += 1
+        if stages:
+            return [{"stage": k, "scheme_count": v} for k, v in stages.items()]
+        return get_local_gold_analytics()["stage_coverage"]
     except Exception:
-        return []
+        return get_local_gold_analytics()["stage_coverage"]
 
 
 @app.get("/analytics/layer")
@@ -629,13 +785,20 @@ def get_analytics():
         sector_dist = safe_query(lambda sb: sb.table("sector_distribution").select("*").execute())
         stage_cov = safe_query(lambda sb: sb.table("stage_coverage").select("*").execute())
         
-        return {
-            "funding_by_ministry": by_ministry.data if by_ministry else [],
-            "sector_distribution": sector_dist.data if sector_dist else [],
-            "stage_coverage": stage_cov.data if stage_cov else []
-        }
+        bm_data = by_ministry.data if by_ministry and by_ministry.data else []
+        sd_data = sector_dist.data if sector_dist and sector_dist.data else []
+        sc_data = stage_cov.data if stage_cov and stage_cov.data else []
+        
+        if bm_data or sd_data or sc_data:
+            return {
+                "funding_by_ministry": bm_data,
+                "sector_distribution": sd_data,
+                "stage_coverage": sc_data
+            }
     except Exception:
-        return {"funding_by_ministry": [], "sector_distribution": [], "stage_coverage": []}
+        pass
+        
+    return get_local_gold_analytics()
 
 
 @app.get("/analytics/detailed")

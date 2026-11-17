@@ -8,7 +8,11 @@ def render():
         res = requests.get("http://localhost:8000/analytics/layer").json()
         if "sector_distribution" in res and res["sector_distribution"]:
             df = pd.DataFrame(res["sector_distribution"])
-            st.bar_chart(df.set_index("sector")["scheme_count"])
+            chart_df = df.groupby("sector")["scheme_count"].sum().sort_values(ascending=False).head(15)
+            st.subheader("Top Sectors by Scheme Count")
+            st.bar_chart(chart_df)
+            with st.expander("View Detailed Table"):
+                st.dataframe(df)
         elif "fallback_aggregated" in res:
             df = pd.DataFrame(res["data"])
             if not df.empty and 'sector_eligibility' in df.columns:

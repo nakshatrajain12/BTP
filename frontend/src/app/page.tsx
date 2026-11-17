@@ -212,6 +212,20 @@ export default function App() {
                 {item.label}
               </button>
             ))}
+            <a
+              href="/community"
+              style={{
+                width: "100%", display: "flex", alignItems: "center", gap: 14,
+                padding: "10px 16px", borderRadius: 12, textDecoration: "none",
+                background: "transparent", color: "#64748b",
+                fontWeight: 500, fontSize: 14, transition: "all 0.15s"
+              }}
+              onMouseEnter={e => e.currentTarget.style.color = "#fff"}
+              onMouseLeave={e => e.currentTarget.style.color = "#64748b"}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 20 }}>groups</span>
+              Founder Community
+            </a>
           </nav>
         </div>
 

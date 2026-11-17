@@ -17,6 +17,8 @@ from scrapers.rajasthan_startup import scrape_rajasthan
 from scrapers.data_gov import scrape_data_gov
 from scrapers.pib import scrape_pib
 from scrapers.startup_india_api import scrape_startup_india_api
+from scrapers.startup_tn import scrape_startup_tn
+from scrapers.aim_niti import scrape_aim_niti
 
 async def run_all_scrapers():
     print("Starting all scrapers...")
@@ -34,6 +36,8 @@ async def run_all_scrapers():
     await scrape_data_gov()
     await scrape_pib()
     await scrape_startup_india_api()
+    await scrape_startup_tn()
+    await scrape_aim_niti()
     print("Scraping completed.")
 
 if __name__ == "__main__":

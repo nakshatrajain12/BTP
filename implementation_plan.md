@@ -1,311 +1,610 @@
-# Unified Spatio-Temporal Graph — Implementation Plan
+# Policy Radar India — Feature Implementation Plan
 
-## Problem Summary
+This implementation plan covers the roadmap, architecture, schema definitions, and code additions for the following three target features:
+1. **Real-time Scheduling** (Option A: GitHub Actions & Option B: In-App APScheduler)
+2. **Expand Portal Coverage** (BaseScraper pattern for new state & central portals)
+3. **Founder Community Features** (Supabase schema, Next.js Community Forum & Advisor Directory)
 
-The current pipeline has a **two-stage bottleneck**:
+---
+
+## 1. Real-time Scheduling (⭐ Easiest — ~1–2 Hours)
+
+### Overview
+Automate daily scraping, silver ETL structuring (Gemini extraction), and NLP enrichment so policy and grant updates remain fresh without manual pipeline triggers.
 
 ```mermaid
-flowchart LR
-    A["ViT Encoder<br/>[B*T, 3, 224, 224] → [B, T, 16, d]"] --> B["Per-Frame Graph<br/>T independent 17-node graphs"]
-    B --> C["GNN Encoder<br/>global_mean_pool → [B*T, H]"]
-    C --> D["Reshape → [B, T, H]"]
-    D --> E["LSTM<br/>[B, T, H] → [B, H_lstm]"]
-    E --> F["Classifier<br/>[B, 1]"]
+flowchart TD
+    Trigger["Schedule Trigger<br/>(GitHub Actions Cron / APScheduler)"] --> Bronze["Bronze Scrapers<br/>run_all_scrapers()"]
+    Bronze --> DB_Raw[("schemes_raw<br/>(Supabase Bronze)")]
+    DB_Raw --> Silver["Silver Layer<br/>run_silver_layer() + Gemini LLM"]
+    Silver --> DB_Silver[("schemes<br/>(Supabase Silver)")]
+    DB_Silver --> NLP["NLP Enrichment<br/>run_nlp_enrichment()"]
+    NLP --> DB_Gold[("gold_views & embeddings")]
 ```
 
-The `global_mean_pool` in Step C **collapses each frame's 17-node spatial structure into a single vector**. Only then does the LSTM see "time." The LSTM never knows *which patches* changed — just that *something* changed. This is the representational ceiling.
+### Option A: GitHub Actions Workflow (Recommended for Cloud Pipelines)
+The repository already contains `.github/workflows/daily_pipeline.yml`.
 
-## Proposed Architecture
+#### 1. Setup Required Secrets
+Ensure the following are added in **GitHub Repository Settings → Secrets and variables → Actions**:
+* `SUPABASE_URL`: Supabase project URL.
+* `SUPABASE_KEY`: Supabase service role key (for ETL insertion).
+* `GEMINI_API_KEY`: Google Gemini API key for Silver extraction & NLP.
 
-Replace the per-frame graph + LSTM with a **single unified spatio-temporal graph** per video:
+#### 2. Workflow Specification (`.github/workflows/daily_pipeline.yml`)
+```yaml
+name: Daily Pipeline Run
 
-```mermaid
-flowchart LR
-    A["ViT Encoder<br/>[B*T, 3, 224, 224] → [B, T, 16, d]"] --> B["ST Graph Builder<br/>Single graph: T×17 nodes<br/>3 edge types"]
-    B --> C["Deeper GAT<br/>4–6 layers over full<br/>T×17 node graph"]
-    C --> D["Global Readout<br/>mean pool → [B, H]"]
-    D --> E["Classifier<br/>[B, 1]"]
+on:
+  schedule:
+    # 02:00 AM IST daily (20:30 UTC)
+    - cron: '30 20 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright
+        run: |
+          playwright install-deps chromium
+          playwright install chromium
+
+      - name: Run Full Pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python -m pipeline.bronze_runner
+          python -m pipeline.silver
+          python -m pipeline.nlp_enrichment
 ```
-
-**Key change**: Nodes are indexed `(t, i)` where `t` = frame index, `i` = patch/master index. Three edge types:
-
-| Edge Type | Connects | Purpose |
-|---|---|---|
-| **Intra-frame spatial** | Patches within the same frame (4-connectivity + master) | Same as current — captures spatial adjacency |
-| **Inter-frame homologous** | Same patch position across adjacent frames `(i,t)↔(i,t+1)` | Lets GNN directly compare how each patch changes over time |
-| **Inter-frame master** | Master nodes across adjacent frames `(master_t)↔(master_t+1)` | Global frame-level temporal continuity |
-
-> [!IMPORTANT]
-> This **eliminates the LSTM entirely**. The GNN itself handles both spatial and temporal reasoning in a single message-passing phase. The LSTM's job (temporal modeling) is absorbed into the inter-frame edges of the unified graph.
 
 ---
 
-## User Review Required
+### Option B: Python In-App Scheduler (`main.py`)
 
-> [!WARNING]
-> **Breaking change**: This creates a fundamentally different architecture. Old checkpoints (`best_e2e.pt`, `last_e2e.pt`) will **not** be loadable with the new model. Training must restart from scratch.
+If running `main.py` continuously as a persistent service (Docker/VPS/VM):
 
-> [!IMPORTANT]
-> **GNN depth increase**: The unified graph is larger (170 nodes for T=10 vs. 17 nodes). We increase GAT layers from 2 → 4 to give messages enough hops to propagate across time. This adds parameters but is still lightweight (~2x current GNN params). Memory is fine — 170 nodes is trivial for PyG.
+#### 1. Install Dependency
+```bash
+pip install apscheduler
+```
 
-> [!IMPORTANT]
-> **Edge feature expansion**: We add a 3rd edge feature dimension — a **temporal distance** scalar — so the GNN knows whether an edge is spatial (0.0) or temporal (normalized frame gap). This changes `edge_dim` from 2 → 3.
+#### 2. Update `main.py`
+Add the `AsyncIOScheduler` inside FastAPI's `lifespan` handler:
+```python
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from contextlib import asynccontextmanager
+
+scheduler = AsyncIOScheduler()
+
+async def scheduled_pipeline_run():
+    print("[CRON] Initiating automated nightly pipeline...")
+    try:
+        await run_all_scrapers()
+        run_silver_layer()
+        run_nlp_enrichment()
+        print("[CRON] Nightly pipeline completed successfully.")
+    except Exception as e:
+        print(f"[CRON ERROR] Scheduled execution failed: {e}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Runs everyday at 02:00 AM server time
+    scheduler.add_job(
+        scheduled_pipeline_run,
+        CronTrigger(hour=2, minute=0),
+        id="nightly_pipeline",
+        replace_existing=True
+    )
+    scheduler.start()
+    print("[SCHEDULER] Daily cron job started (02:00 AM).")
+    yield
+    scheduler.shutdown()
+
+app = FastAPI(title="Policy Radar India API", lifespan=lifespan)
+```
 
 ---
 
-## Proposed Changes
+## 2. Expand Portal Coverage (⭐⭐ Easy to Moderate — ~30–45 Mins per Portal)
 
-### Graph Construction — Core of the Change
+### Overview
+Each scraper extracts raw announcements and scheme details, hashes the content to prevent duplicate records, and inserts into `schemes_raw` using `insert_into_bronze(source_url, raw_content)`. The existing Silver layer uses Gemini to automatically structure the data.
 
-#### [MODIFY] [graph_builder.py](file:///workspace/saumilya/GNN-Based-Deepfake-Detection-via-Spatio-Temporal-Relationship-Modeling/end_to_end_pipeline/graph_builder.py)
+### Targeted Portals
+1. **StartupTN** (`https://startuptn.in`) — Tamil Nadu State Startup Ecosystem
+2. **Atal Innovation Mission (AIM)** (`https://aim.gov.in`) — NITI Aayog Schemes & Grants
+3. **Startup Karnataka / Elevate** (`https://startup.karnataka.gov.in`)
 
-**Complete rewrite.** The current file builds `T` independent 17-node graphs. The new version builds **one** unified graph with `T × 17` nodes.
+---
 
-**New `build_st_graph()` function** (replaces `build_graph()` + `build_sequence_batch()`):
+### Step 1: Create Scraper File (`scrapers/startup_tn.py`)
 
 ```python
-def build_st_graph(
-    z_patches: torch.Tensor,  # [T, 16, d]
-    z_img: torch.Tensor,      # [T, d]
-    T: int,
-) -> Data:
+import httpx
+from bs4 import BeautifulSoup
+from scrapers.base_scraper import insert_into_bronze
+
+PORTAL_URL = "https://startuptn.in"
+
+async def scrape_startup_tn():
+    """Scrapes scheme and grant announcements from StartupTN."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        async with httpx.AsyncClient(verify=False, timeout=30.0, headers=headers) as client:
+            response = await client.get(PORTAL_URL)
+            if response.status_code != 200:
+                print(f"[StartupTN] Failed with HTTP status: {response.status_code}")
+                return
+
+            soup = BeautifulSoup(response.text, "html.parser")
+            title = soup.title.string.strip() if soup.title else "StartupTN Portal"
+
+            # Parse relevant scheme and grant anchors
+            schemes_found = []
+            for link in soup.find_all("a", href=True):
+                text = link.get_text(strip=True)
+                if any(k in text.lower() for k in ["grant", "scheme", "fund", "seed", "tanseed", "subsidy"]):
+                    href = link["href"]
+                    full_url = href if href.startswith("http") else f"{PORTAL_URL}/{href.lstrip('/')}"
+                    schemes_found.append({"title": text, "url": full_url})
+
+            raw_data = {
+                "portal_name": "StartupTN",
+                "state": "Tamil Nadu",
+                "page_title": title,
+                "schemes_detected": schemes_found,
+                "html_snippet": str(soup.body)[:15000]
+            }
+
+            insert_into_bronze(PORTAL_URL, raw_data)
+            print(f"[StartupTN] Ingested {len(schemes_found)} candidate items into Bronze.")
+    except Exception as e:
+        print(f"[StartupTN Error] Scraper encountered an error: {e}")
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(scrape_startup_tn())
 ```
 
-**Node construction** (`T × 17` nodes):
-- For each frame `t` in `[0, T)`:
-  - 16 patch nodes: `x[t*17 + i] = [z_patches[t, i] || t_norm]` where `t_norm = t / (T-1)`
-  - 1 master node: `x[t*17 + 16] = [z_img[t] || t_norm]`
-- Total nodes: `T * 17` (e.g., 136 for T=8, 170 for T=10)
+---
 
-**Edge construction** — three types, each with 3D edge features `[manhattan_dist, cosine_sim, temporal_dist]`:
-
-1. **Intra-frame spatial** (same as current, but offset per frame):
-   - Patch 4-connectivity: `(t*17+i, t*17+j)` for adjacent patches
-   - Master edges: `(t*17+16, t*17+i)` bidirectional
-   - `temporal_dist = 0.0` (same frame)
-
-2. **Inter-frame homologous** (NEW):
-   - For each patch `i` and adjacent frames `t, t+1`: `(t*17+i, (t+1)*17+i)` bidirectional
-   - For master nodes: `(t*17+16, (t+1)*17+16)` bidirectional
-   - `temporal_dist = 1.0 / (T-1)` (normalized temporal gap)
-
-3. Edge features: `[manhattan_distance, cosine_similarity, temporal_distance]`
-   - Spatial edges: `[manhattan, cos_sim, 0.0]`
-   - Temporal edges: `[0.0, cos_sim, t_gap]` (manhattan=0 for same-position temporal link)
-
-**New `build_st_batch()` function** (replaces `build_sequence_batch()`):
+### Step 2: Create Scraper File for NITI Aayog AIM (`scrapers/aim_niti.py`)
 
 ```python
-def build_st_batch(
-    z_patches_bt: torch.Tensor,  # [B, T, 16, d]
-    z_img_bt: torch.Tensor,      # [B, T, d]
-    T: int,
-) -> Batch:
-    """Build B spatio-temporal graphs (one per video), batched into a single PyG Batch."""
-```
+import httpx
+from bs4 import BeautifulSoup
+from scrapers.base_scraper import insert_into_bronze
 
-This creates `B` graphs (one per video in the batch), each with `T*17` nodes, then batches them.
+AIM_URL = "https://aim.gov.in"
 
-**`graph_metrics_from_batch()`** — updated to log:
-- `graph/num_spatial_edges`, `graph/num_temporal_edges`
-- `graph/spatial_cosine_sim_mean`, `graph/temporal_cosine_sim_mean`
-- Same node norm stats as before
+async def scrape_aim_niti():
+    """Scrapes programs and challenges from NITI Aayog Atal Innovation Mission."""
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        async with httpx.AsyncClient(verify=False, timeout=30.0, headers=headers) as client:
+            response = await client.get(AIM_URL)
+            soup = BeautifulSoup(response.text, "html.parser")
+            title = soup.title.string.strip() if soup.title else "Atal Innovation Mission"
 
----
+            announcements = []
+            for a in soup.find_all("a", href=True):
+                text = a.get_text(strip=True)
+                if any(word in text.lower() for word in ["aic", "cic", "scale", "fellowship", "grant", "challenge"]):
+                    announcements.append({"title": text, "href": a["href"]})
 
-### GNN Encoder — Deeper + New Edge Dim
+            raw_data = {
+                "portal_name": "Atal Innovation Mission (AIM)",
+                "organization": "NITI Aayog",
+                "page_title": title,
+                "announcements": announcements,
+                "html_snippet": str(soup.body)[:15000]
+            }
 
-#### [MODIFY] [gnn_encoder.py](file:///workspace/saumilya/GNN-Based-Deepfake-Detection-via-Spatio-Temporal-Relationship-Modeling/end_to_end_pipeline/gnn_encoder.py)
+            insert_into_bronze(AIM_URL, raw_data)
+            print(f"[AIM NITI] Ingested {len(announcements)} announcements into Bronze.")
+    except Exception as e:
+        print(f"[AIM NITI Error] Scraper encountered an error: {e}")
 
-Changes:
-1. **`edge_dim`**: `2 → 3` (add temporal distance feature)
-2. **Default `num_layers`**: `2 → 4` (more message-passing rounds for temporal propagation)
-3. **Add residual connections**: For layers ≥ 2 where input/output dims match, add `x = x + x_prev` to prevent gradient degradation in deeper networks
-4. **GCN edge encoder**: Update `nn.Linear(2, 1)` → `nn.Linear(3, 1)`
-
-```diff
- class GNNEncoder(nn.Module):
-     def __init__(
-         self,
-         in_channels: int,
-         hidden_channels: int,
--        num_layers: int = 2,
-+        num_layers: int = 4,
-         gnn_type: str = "gat",
-         gnn_dropout: float = 0.5,
-         attn_dropout: float = 0.5,
-     ) -> None:
-         ...
-         if gnn_type == "gat":
--            edge_dim = 2
-+            edge_dim = 3
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(scrape_aim_niti())
 ```
 
 ---
 
-### Temporal Module — Removed
-
-#### [DELETE] [temporal.py](file:///workspace/saumilya/GNN-Based-Deepfake-Detection-via-Spatio-Temporal-Relationship-Modeling/end_to_end_pipeline/temporal.py)
-
-The LSTM `TemporalEncoder` is no longer needed. Temporal reasoning is absorbed into the unified GNN.
-
-> [!NOTE]
-> We won't actually delete the file (to preserve git history for comparison), but it will no longer be imported or used. We can optionally keep it for ablation experiments.
-
----
-
-### Main Model — Rewired
-
-#### [MODIFY] [model.py](file:///workspace/saumilya/GNN-Based-Deepfake-Detection-via-Spatio-Temporal-Relationship-Modeling/end_to_end_pipeline/model.py)
-
-**Major changes to `EndToEndDeepfakeDetector`:**
-
-1. **Remove LSTM-related code**: `TemporalEncoder`, `temporal_dropout`, `sequence_dropout`
-2. **Replace `build_sequence_batch`** with `build_st_batch`
-3. **Change forward flow**:
-
+### Step 3: Register in `pipeline/bronze_runner.py`
+Add the new scrapers to the batch runner:
 ```python
-# BEFORE:
-# ViT → T per-frame graphs → GNN (pool each frame) → [B, T, H] → LSTM → [B, H_lstm] → classifier
+from scrapers.startup_tn import scrape_startup_tn
+from scrapers.aim_niti import scrape_aim_niti
 
-# AFTER:
-# ViT → 1 ST-graph per video → GNN (pool entire video) → [B, H] → classifier
+async def run_all_scrapers():
+    print("Starting all scrapers...")
+    # ... existing scrapers
+    await scrape_startup_tn()
+    await scrape_aim_niti()
+    print("Scraping completed.")
 ```
 
-4. **Classifier input dim**: Changes from `temporal_hidden (256)` → `gnn_hidden (128)` since we skip the LSTM
-5. **Constructor signature**: Remove `temporal_hidden`, `temporal_dropout`, `sequence_dropout` params. Add `gnn_layers` default = 4.
+---
 
-**Updated forward pass:**
+## 3. Founder Community Features (⭐⭐⭐ Moderate — ~1–2 Days)
 
-```python
-def forward(self, frames, labels=None, return_metrics=True):
-    # 1. ViT: [B, T, 3, H, W] → z_patches [B, T, 16, d], z_img [B, T, d]
-    # 2. Build ST graph batch: B graphs, each T*17 nodes
-    pyg_batch = build_st_batch(z_patches, z_img, t)
-    # 3. GNN over full ST graph → global_mean_pool → [B, gnn_hidden]
-    pooled = self.gnn(pyg_batch.x, pyg_batch.edge_index, pyg_batch.edge_attr, pyg_batch.batch)
-    # 4. Classifier: [B, gnn_hidden] → [B, 1]
-    preds = self.classifier_head(pooled)
+### Overview
+Provides an interactive discussion forum and a verified policy advisor directory for founders. Built with **Supabase PostgreSQL (tables + RLS)** and **Next.js (App Router, Tailwind CSS, Lucide Icons)**.
+
+---
+
+### Step 1: Database Migration (`migrations/005_community_schema.sql`)
+
+Execute the following SQL in Supabase SQL Editor:
+
+```sql
+-- 1. Community Discussion Posts
+CREATE TABLE community_posts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    author_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    author_name TEXT NOT NULL,
+    company_name TEXT DEFAULT 'Founder',
+    category TEXT NOT NULL CHECK (category IN ('Grants', 'DPIIT Recognition', 'Compliance', 'Investor Pitch', 'General')),
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    upvotes INT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 2. Post Replies
+CREATE TABLE community_replies (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    post_id UUID REFERENCES community_posts(id) ON DELETE CASCADE,
+    author_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    author_name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. Policy & Scheme Advisors
+CREATE TABLE advisors (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    role_title TEXT NOT NULL,
+    organization TEXT NOT NULL,
+    expertise TEXT[] NOT NULL,
+    bio TEXT NOT NULL,
+    linkedin_url TEXT,
+    contact_email TEXT,
+    is_verified BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Enable Row Level Security (RLS)
+ALTER TABLE community_posts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE community_replies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE advisors ENABLE ROW LEVEL SECURITY;
+
+-- Post Policies
+CREATE POLICY "Public read community_posts" 
+    ON community_posts FOR SELECT USING (true);
+
+CREATE POLICY "Authenticated users can create posts" 
+    ON community_posts FOR INSERT WITH CHECK (auth.uid() = author_id);
+
+CREATE POLICY "Authors can update own posts" 
+    ON community_posts FOR UPDATE USING (auth.uid() = author_id);
+
+CREATE POLICY "Authors can delete own posts" 
+    ON community_posts FOR DELETE USING (auth.uid() = author_id);
+
+-- Reply Policies
+CREATE POLICY "Public read community_replies" 
+    ON community_replies FOR SELECT USING (true);
+
+CREATE POLICY "Authenticated users can reply" 
+    ON community_replies FOR INSERT WITH CHECK (auth.uid() = author_id);
+
+-- Advisor Directory Policies
+CREATE POLICY "Public read advisors" 
+    ON advisors FOR SELECT USING (true);
+
+-- Seed Initial Advisors
+INSERT INTO advisors (name, role_title, organization, expertise, bio, linkedin_url, contact_email)
+VALUES
+('Dr. Ramesh Sundaram', 'Senior Policy Consultant', 'Startup India Advisory Panel', ARRAY['DPIIT Section 80-IAC', 'Seed Fund Scheme', 'Tax Exemption'], 'Former advisor to DPIIT helping deep-tech startups navigate seed funding and angel tax exemption.', 'https://linkedin.com', 'advisor@policyradar.in'),
+('Priya Venkat', 'Grant Specialist', 'BioNEST / BIRAC Mentor', ARRAY['BIRAC BIG', 'Biotech Grants', 'Clinical Trials Compliance'], 'Assists early-stage life sciences and medtech startups in writing winning BIRAC grant proposals.', 'https://linkedin.com', 'priya@policyradar.in'),
+('Anand Kulkarni', 'Legal & Regulatory Lead', 'Fintech Regulatory Sandbox', ARRAY['RBI Sandbox', 'FDI Regulations', 'ESOP Compliance'], 'Specializes in DPIIT compliances, cross-border payments, and fintech compliance sandbox applications.', 'https://linkedin.com', 'anand@policyradar.in');
 ```
 
-**Updated `_embedding_separation()`**: Takes `[B, H]` directly (no temporal dim to mean over).
-
 ---
 
-### Classifier — Unchanged
+### Step 2: Next.js Frontend Page (`frontend/src/app/community/page.tsx`)
 
-#### [KEEP] [classifier.py](file:///workspace/saumilya/GNN-Based-Deepfake-Detection-via-Spatio-Temporal-Relationship-Modeling/end_to_end_pipeline/classifier.py)
+Create the community page at `frontend/src/app/community/page.tsx`:
 
-No changes needed. `input_dim` will just be `gnn_hidden` (128) instead of `temporal_hidden` (256).
+```tsx
+"use client";
 
----
+import React, { useState, useEffect } from "react";
+import { createClient } from "@/lib/supabase/client";
+import { MessageSquare, Users, ThumbsUp, Send, CheckCircle2, Linkedin, Mail } from "lucide-react";
 
-### ViT Encoder — Unchanged
+interface Post {
+  id: string;
+  author_name: string;
+  company_name: string;
+  category: string;
+  title: string;
+  content: string;
+  upvotes: number;
+  created_at: string;
+}
 
-#### [KEEP] [vit_encoder.py](file:///workspace/saumilya/GNN-Based-Deepfake-Detection-via-Spatio-Temporal-Relationship-Modeling/end_to_end_pipeline/vit_encoder.py)
+interface Advisor {
+  id: string;
+  name: string;
+  role_title: string;
+  organization: string;
+  expertise: string[];
+  bio: string;
+  linkedin_url?: string;
+  contact_email?: string;
+}
 
-No changes. Same `[B, 16, d]` patch output and `[B, d]` CLS token output per frame.
+export default function CommunityPage() {
+  const [activeTab, setActiveTab] = useState<"forum" | "advisors">("forum");
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [advisors, setAdvisors] = useState<Advisor[]>([]);
+  const [newTitle, setNewTitle] = useState("");
+  const [newContent, setNewContent] = useState("");
+  const [newCategory, setNewCategory] = useState("Grants");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
----
+  const supabase = createClient();
 
-### Config — Updated
+  useEffect(() => {
+    fetchPosts();
+    fetchAdvisors();
+  }, []);
 
-#### [MODIFY] [config.yaml](file:///workspace/saumilya/GNN-Based-Deepfake-Detection-via-Spatio-Temporal-Relationship-Modeling/end_to_end_pipeline/config.yaml)
+  const fetchPosts = async () => {
+    const { data } = await supabase
+      .from("community_posts")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (data) setPosts(data);
+  };
 
-```diff
- model:
-   vit_backbone: vit_small_patch16_224
-   vit_pretrained: true
-   gnn_type: gat
--  gnn_layers: 2
-+  gnn_layers: 4
-   gnn_hidden: 128
--  gnn_dropout: 0.5
--  attn_dropout: 0.5
--  temporal: lstm
--  temporal_hidden: 256
--  temporal_dropout: 0.2
--  classifier_dropout: 0.5
--  sequence_dropout: 0.2
-+  gnn_dropout: 0.3
-+  attn_dropout: 0.3
-+  classifier_dropout: 0.3
+  const fetchAdvisors = async () => {
+    const { data } = await supabase.from("advisors").select("*");
+    if (data) setAdvisors(data);
+  };
+
+  const handleCreatePost = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTitle.trim() || !newContent.trim()) return;
+
+    setIsSubmitting(true);
+    const { data: { user } } = await supabase.auth.getUser();
+
+    const { error } = await supabase.from("community_posts").insert({
+      author_id: user?.id,
+      author_name: user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder",
+      company_name: user?.user_metadata?.company_name || "Startup India",
+      category: newCategory,
+      title: newTitle,
+      content: newContent,
+    });
+
+    setIsSubmitting(false);
+    if (!error) {
+      setNewTitle("");
+      setNewContent("");
+      fetchPosts();
+    }
+  };
+
+  const handleUpvote = async (postId: string, currentUpvotes: number) => {
+    const { error } = await supabase
+      .from("community_posts")
+      .update({ upvotes: currentUpvotes + 1 })
+      .eq("id", postId);
+
+    if (!error) {
+      setPosts((prev) =>
+        prev.map((p) => (p.id === postId ? { ...p, upvotes: p.upvotes + 1 } : p))
+      );
+    }
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 py-8">
+      {/* Header */}
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold tracking-tight text-slate-900">Founder Community & Mentors</h1>
+        <p className="text-slate-500 mt-1">Discuss scheme approvals, grant application advice, and connect with verified policy advisors.</p>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex border-b border-slate-200 mb-6 gap-6">
+        <button
+          onClick={() => setActiveTab("forum")}
+          className={`flex items-center gap-2 pb-3 text-sm font-semibold border-b-2 transition-colors ${
+            activeTab === "forum"
+              ? "border-blue-600 text-blue-600"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          <MessageSquare className="w-4 h-4" /> Discussion Feed
+        </button>
+        <button
+          onClick={() => setActiveTab("advisors")}
+          className={`flex items-center gap-2 pb-3 text-sm font-semibold border-b-2 transition-colors ${
+            activeTab === "advisors"
+              ? "border-blue-600 text-blue-600"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          <Users className="w-4 h-4" /> Policy Advisors ({advisors.length})
+        </button>
+      </div>
+
+      {/* Discussion Forum Tab */}
+      {activeTab === "forum" ? (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-2 space-y-4">
+            {posts.length === 0 ? (
+              <div className="p-8 text-center bg-white border border-slate-200 rounded-xl text-slate-500">
+                No discussion threads yet. Be the first founder to post!
+              </div>
+            ) : (
+              posts.map((post) => (
+                <div key={post.id} className="p-5 bg-white border border-slate-200 rounded-xl shadow-xs">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold px-2.5 py-0.5 bg-blue-50 text-blue-700 rounded-full">
+                      {post.category}
+                    </span>
+                    <span className="text-xs text-slate-400">
+                      {new Date(post.created_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <h3 className="text-lg font-semibold text-slate-900">{post.title}</h3>
+                  <p className="text-sm text-slate-600 mt-2 whitespace-pre-line">{post.content}</p>
+                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                    <span>By {post.author_name} • {post.company_name}</span>
+                    <button
+                      onClick={() => handleUpvote(post.id, post.upvotes || 0)}
+                      className="flex items-center gap-1.5 hover:text-blue-600 transition-colors cursor-pointer"
+                    >
+                      <ThumbsUp className="w-3.5 h-3.5" /> {post.upvotes || 0}
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* New Post Form */}
+          <div className="p-5 bg-white border border-slate-200 rounded-xl shadow-xs h-fit sticky top-6">
+            <h2 className="font-semibold text-slate-900 mb-3">Ask or Share an Update</h2>
+            <form onSubmit={handleCreatePost} className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Topic Category</label>
+                <select
+                  value={newCategory}
+                  onChange={(e) => setNewCategory(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-lg p-2.5 bg-white focus:outline-blue-500"
+                >
+                  <option value="Grants">Grants & Subsidies</option>
+                  <option value="DPIIT Recognition">DPIIT Recognition</option>
+                  <option value="Compliance">Compliance & Tax Exemption</option>
+                  <option value="Investor Pitch">Investor Pitch</option>
+                  <option value="General">General Discussion</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Title</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Has anyone received the SISFS seed grant approval in Tamil Nadu?"
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-lg p-2.5 focus:outline-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Details</label>
+                <textarea
+                  placeholder="Share details, questions, or timeline experiences..."
+                  rows={4}
+                  value={newContent}
+                  onChange={(e) => setNewContent(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-lg p-2.5 focus:outline-blue-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="w-full bg-blue-600 text-white font-medium text-sm py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                <Send className="w-4 h-4" /> {isSubmitting ? "Posting..." : "Post to Community"}
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : (
+        /* Advisor Directory Tab */
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {advisors.map((advisor) => (
+            <div key={advisor.id} className="p-5 bg-white border border-slate-200 rounded-xl shadow-xs flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <h3 className="font-bold text-slate-900">{advisor.name}</h3>
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                </div>
+                <p className="text-xs text-blue-600 font-medium">{advisor.role_title} • {advisor.organization}</p>
+                <p className="text-xs text-slate-600 mt-3">{advisor.bio}</p>
+                <div className="flex flex-wrap gap-1 mt-3">
+                  {advisor.expertise.map((tag, idx) => (
+                    <span key={idx} className="text-[11px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-3 mt-5 pt-3 border-t border-slate-100">
+                {advisor.linkedin_url && (
+                  <a href={advisor.linkedin_url} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-blue-600 transition-colors">
+                    <Linkedin className="w-4 h-4" />
+                  </a>
+                )}
+                {advisor.contact_email && (
+                  <a href={`mailto:${advisor.contact_email}`} className="text-slate-400 hover:text-blue-600 transition-colors">
+                    <Mail className="w-4 h-4" />
+                  </a>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 ```
 
-> [!TIP]
-> Dropout reduced from 0.5 → 0.3 as per the analysis in `plan.md` — the model was simultaneously over-regularized and architecturally underfit. With the new architecture providing more capacity, we start with moderate regularization.
-
 ---
 
-### Training Script — Updated
+## 4. Verification & Testing Checklist
 
-#### [MODIFY] [train.py](file:///workspace/saumilya/GNN-Based-Deepfake-Detection-via-Spatio-Temporal-Relationship-Modeling/end_to_end_pipeline/train.py)
-
-Changes:
-1. **Model constructor call**: Remove `temporal_hidden`, `temporal_dropout`, `sequence_dropout` args
-2. **Grad/weight logging**: Remove `model.temporal` references, replace with updated GNN references
-3. **`snapshot_state` / `weight_update_ratio`**: Remove LSTM snapshots (`lstm_b`)
-4. All other training logic (optimizer, scheduler, early stopping, W&B, focal loss) stays the same
-
----
-
-### Dataset — Unchanged
-
-#### [KEEP] [dataset.py](file:///workspace/saumilya/GNN-Based-Deepfake-Detection-via-Spatio-Temporal-Relationship-Modeling/end_to_end_pipeline/dataset.py)
-
-No changes. Same `[T, 3, H, W]` output per video.
-
----
-
-## Architecture Comparison
-
-| Aspect | Current (Two-Stage) | Proposed (Unified ST-Graph) |
-|---|---|---|
-| Nodes per video | T × 17 (but T separate graphs) | T × 17 (one graph) |
-| Temporal modeling | LSTM over collapsed graph embeddings | GNN message passing over inter-frame edges |
-| Can detect patch-level temporal inconsistency | ❌ (collapsed before LSTM) | ✅ (direct inter-frame patch edges) |
-| GNN layers | 2 | 4 |
-| Edge features | 2D: [manhattan, cosine_sim] | 3D: [manhattan, cosine_sim, temporal_dist] |
-| LSTM | 256-hidden LSTM | Eliminated |
-| Total parameters | ~26M (ViT-S) + GNN + LSTM | ~26M (ViT-S) + deeper GNN (no LSTM) |
-| Dropout stages | 5 (gnn, attn, temporal, classifier, sequence) | 3 (gnn, attn, classifier) |
-
----
-
-## Open Questions
-
-> [!IMPORTANT]
-> **GNN hidden dim**: Should we increase `gnn_hidden` from 128 to 256 since we're removing the LSTM (which was 256)? The classifier input would be 256 instead of 128. This adds ~2x GNN params but may help capacity. My recommendation: keep 128 for now, increase only if underfitting persists.
-
-> [!IMPORTANT]
-> **Edge construction optimization**: The current graph builder uses Python loops which is slow. Should we vectorize edge construction with `torch.arange` + indexing? My recommendation: Yes, do it during implementation — it's critical for training speed with the larger graph.
-
----
-
-## Verification Plan
-
-### Automated Tests
-
-1. **Smoke test** — Verify the model runs end-to-end with synthetic data:
-   ```bash
-   cd end_to_end_pipeline && python train.py --config config.yaml --smoke
-   ```
-   Should complete 3 smoke epochs without errors.
-
-2. **Shape verification** — Check that:
-   - ST graph has `T * 17` nodes per video
-   - Edge index includes both spatial and temporal edges
-   - Edge attr has 3 features per edge
-   - GNN output is `[B, gnn_hidden]` (not `[B*T, gnn_hidden]`)
-   - Final prediction is `[B, 1]`
-
-3. **Gradient flow** — Verify gradients propagate through the full graph to the ViT:
-   - Check `grads/vit_grad_norm > 0` after first backward pass
-   - Check `grads/gnn_grad_norm > 0`
-
-### Manual Verification
-
-4. **Full Celeb-DF training run** — Train for 10-20 epochs and compare:
-   - Training accuracy convergence speed vs. old architecture
-   - Validation accuracy plateau
-   - W&B metric dashboards (spatial vs. temporal edge cosine similarities)
+| Step | Action | Command / Test | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **1.1** | Test In-App APScheduler | `python -c "from main import app; print('FastAPI loaded successfully')"` | App initializes with lifespan background scheduler |
+| **1.2** | Test GitHub Actions | Trigger via `gh workflow run daily_pipeline.yml` or manual dispatch | Runner completes all steps and inserts bronze/silver records |
+| **2.1** | Test StartupTN Scraper | `python -m scrapers.startup_tn` | Inserts raw items into `schemes_raw` with SHA-256 hash |
+| **2.2** | Test AIM NITI Scraper | `python -m scrapers.aim_niti` | Inserts raw announcements into `schemes_raw` |
+| **2.3** | Test Silver Transformation | `curl -X POST http://localhost:8000/pipeline/run-silver` | Gemini structures the new raw records into `schemes` table |
+| **3.1** | Test Community Migration | Check Supabase dashboard table editor | `community_posts`, `community_replies`, and `advisors` created with RLS |
+| **3.2** | Test Community Frontend | Visit `http://localhost:3000/community` | Submit post, see thread in feed, view advisor cards |

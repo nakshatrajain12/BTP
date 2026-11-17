@@ -1,10 +1,14 @@
 # Environments
 .env
+dashboard/local_users.json
 
 # Cache and build directories
 __pycache__/
 .pytest_cache/
 .qodo/
+
+# Other projects & archives
+other_projects/
 
 # Project documents and output reports
 Startup_Policy_Intelligence_Implementation_Plan (1).pdf
