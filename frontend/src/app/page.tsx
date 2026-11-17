@@ -183,9 +183,23 @@ function useAPI<T>(url: string, opts?: RequestInit) {
     if (!promise) {
       const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
       promise = fetch(`${API}${url}`, opts)
-        .then(r => {
+        .then(async (r) => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          return r.json();
+          const json = await r.json();
+          // If summary returns 0 or schemes returns empty array, seamlessly recover from Supabase directly!
+          if (url === "/analytics/summary" && (!json || json.total_schemes === 0)) {
+            const fallback = await fetchSupabaseFallback(url, opts);
+            if (fallback) return fallback;
+          }
+          if (url.startsWith("/schemes") && (!json?.schemes || json.schemes.length === 0)) {
+            const fallback = await fetchSupabaseFallback(url, opts);
+            if (fallback) return fallback;
+          }
+          if (url === "/opportunity-radar" && (!json?.radar_schemes || json.radar_schemes.length === 0)) {
+            const fallback = await fetchSupabaseFallback(url, opts);
+            if (fallback) return fallback;
+          }
+          return json;
         })
         .catch(async (fetchErr) => {
           // If backend API is not running or fails, query Supabase directly!
